@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "994949058376",
+    "project_id": "mindfulhaven-e755c",
+    "storage_bucket": "mindfulhaven-e755c.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:994949058376:android:bd2c77db2e02c0e1082d7d",
+        "android_client_info": {
+          "package_name": "com.example.mindful_haven"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBBj_-HCoXbrc6HvErryK60QXN0BENDXe4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

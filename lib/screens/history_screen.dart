@@ -1,335 +1,256 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-import '../theme/app_theme.dart';
-import '../main.dart'; // Import to access navigationKey
-import 'emergency_support_screen.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:intl/intl.dart';
+import 'package:provider/provider.dart';
+import 'theme_provider.dart'; 
+// Make sure this import matches your breathing screen file path
+import 'breathing_screen.dart'; 
 
-class HistoryScreen extends StatelessWidget {
+class HistoryScreen extends StatefulWidget {
   const HistoryScreen({super.key});
 
-  final bool hasHistory = false;
+  @override
+  State<HistoryScreen> createState() => _HistoryScreenState();
+}
+
+class _HistoryScreenState extends State<HistoryScreen> {
+  final Color brandTeal = const Color(0xFF26C6DA);
+  final User? _currentUser = FirebaseAuth.instance.currentUser;
+
+  Future<void> _deleteHistoryItem(String docId) async {
+    try {
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(_currentUser!.uid)
+          .collection('breathing_history')
+          .doc(docId)
+          .delete();
+    } catch (e) {
+      debugPrint("Error deleting record: $e");
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: AppTheme.background,
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 32.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Premium Header with Profile & Actions
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Welcome Back, Kinza',
-                      style: GoogleFonts.outfit(
-                        fontSize: 14,
-                        color: AppTheme.textLight,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    Text(
-                      'Your Journey',
-                      style: GoogleFonts.outfit(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w900,
-                        color: AppTheme.textDark,
-                        letterSpacing: -0.5,
-                      ),
-                    ),
-                  ],
-                ),
-                Row(
-                  children: [
-                    IconButton(
-                      icon: const Icon(Icons.shield_moon_outlined, color: Colors.redAccent, size: 24),
-                      onPressed: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(builder: (context) => const EmergencySupportScreen()),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        shape: BoxShape.circle,
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withOpacity(0.04),
-                            blurRadius: 10,
-                            offset: const Offset(0, 4),
-                          ),
-                        ],
-                      ),
-                      child: IconButton(
-                        icon: const Icon(Icons.tune_rounded, color: AppTheme.textDark, size: 24),
-                        onPressed: () {},
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-            const SizedBox(height: 20),
+    if (_currentUser == null) {
+      return const Scaffold(body: Center(child: Text("User not logged in")));
+    }
 
-            // Weekly Stats Summary Card - Dynamic Logic Applied
-            Container(
-              padding: const EdgeInsets.all(24),
-              decoration: BoxDecoration(
-                gradient: AppTheme.primaryGradient,
-                borderRadius: BorderRadius.circular(30),
-                boxShadow: [
-                  BoxShadow(
-                    color: AppTheme.primaryTeal.withOpacity(0.2),
-                    blurRadius: 20,
-                    offset: const Offset(0, 8),
+    final themeProvider = context.watch<ThemeProvider>();
+    final bool isDark = themeProvider.isDarkMode;
+
+    final Color bgColor = isDark ? Colors.black : const Color(0xFFF8FAFC);
+    final Color textColor = isDark ? Colors.white : Colors.black;
+    final Color cardColor = isDark ? const Color(0xFF121212) : Colors.white;
+    final Color subTextColor = isDark ? Colors.white70 : Colors.black54;
+
+    return Scaffold(
+      backgroundColor: bgColor,
+      appBar: AppBar(
+        backgroundColor: bgColor,
+        elevation: 0,
+        centerTitle: true,
+        automaticallyImplyLeading: false, // Back button remove kar diya
+        title: Text(
+          'History',
+          style: TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.bold,
+            color: textColor,
+          ),
+        ),
+      ),
+      body: StreamBuilder<QuerySnapshot>(
+        stream: FirebaseFirestore.instance
+            .collection('users')
+            .doc(_currentUser!.uid)
+            .collection('breathing_history')
+            .orderBy('timestamp', descending: true)
+            .snapshots(),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return Center(child: CircularProgressIndicator(color: brandTeal));
+          }
+
+          if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+            return _buildEmptyState(textColor, subTextColor, isDark);
+          }
+
+          return ListView.builder(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+            itemCount: snapshot.data!.docs.length,
+            itemBuilder: (context, index) {
+              var doc = snapshot.data!.docs[index];
+              var data = doc.data() as Map<String, dynamic>;
+              DateTime date = (data['timestamp'] as Timestamp?)?.toDate() ?? DateTime.now();
+
+              return Container(
+                margin: const EdgeInsets.only(bottom: 12),
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: cardColor,
+                  borderRadius: BorderRadius.circular(15),
+                  border: Border.all(
+                    color: isDark ? Colors.white10 : Colors.grey.shade200,
                   ),
-                ],
-              ),
-              child: Column(
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Column(
+                ),
+                child: Row(
+                  children: [
+                    CircleAvatar(
+                      backgroundColor: brandTeal.withOpacity(0.1),
+                      child: Icon(Icons.air_rounded, color: brandTeal),
+                    ),
+                    const SizedBox(width: 15),
+                    Expanded(
+                      child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            'Weekly Check-ins',
-                            style: GoogleFonts.outfit(
-                              color: Colors.white.withOpacity(0.9),
-                              fontSize: 12,
-                              fontWeight: FontWeight.w600,
+                            'Box Breathing',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: textColor,
+                              fontSize: 16,
                             ),
                           ),
-                          const SizedBox(height: 6),
                           Text(
-                            hasHistory ? '12 Sessions' : '0 Sessions',
-                            style: GoogleFonts.outfit(
-                              color: Colors.white,
-                              fontSize: 16,
-                              fontWeight: FontWeight.w900,
-                            ),
+                            DateFormat('dd MMM, hh:mm a').format(date),
+                            style: TextStyle(fontSize: 12, color: subTextColor),
                           ),
                         ],
                       ),
-                      Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: Colors.white.withOpacity(0.2),
-                          shape: BoxShape.circle,
+                    ),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        Text(
+                          '${(data['duration'] ?? 0) ~/ 60}m',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: brandTeal,
+                          ),
                         ),
-                        child: const Icon(Icons.auto_graph_rounded, color: Colors.white, size: 24),
-                      ),
-                    ],
+                        IconButton(
+                          constraints: const BoxConstraints(),
+                          padding: EdgeInsets.zero,
+                          icon: const Icon(
+                            Icons.delete_sweep_outlined,
+                            color: Colors.redAccent,
+                            size: 20,
+                          ),
+                          onPressed: () => _deleteHistoryItem(doc.id),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildEmptyState(Color textColor, Color subTextColor, bool isDark) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 40),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            SizedBox(
+              width: 220,
+              height: 220,
+              child: Stack(
+                alignment: Alignment.center,
+                children: [
+                  Container(
+                    width: 180,
+                    height: 180,
+                    decoration: BoxDecoration(
+                      color: brandTeal.withOpacity(isDark ? 0.1 : 0.2),
+                      shape: BoxShape.circle,
+                    ),
                   ),
-                  const SizedBox(height: 20),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      _buildStatItem(hasHistory ? '4.8' : '0.0', 'Mood Avg'),
-                      _buildStatItem(hasHistory ? '85%' : '0%', 'Stability'),
-                      _buildStatItem(hasHistory ? '5d' : '0d', 'Streak'),
-                    ],
+                  Positioned(top: 40, left: 50, child: Icon(Icons.eco_rounded, color: brandTeal.withOpacity(0.3), size: 35)),
+                  Positioned(top: 60, right: 40, child: Icon(Icons.favorite_rounded, color: brandTeal.withOpacity(0.3), size: 40)),
+                  // Error wala icon local_florist se replace kar diya jo professional lag raha hai
+                  Positioned(bottom: 50, left: 60, child: Icon(Icons.local_florist_rounded, color: brandTeal.withOpacity(0.3), size: 35)),
+                  Positioned(bottom: 60, right: 50, child: Icon(Icons.cloud_rounded, color: brandTeal.withOpacity(0.3), size: 30)),
+                  
+                  Positioned(
+                    top: 30,
+                    right: 30,
+                    child: Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: const BoxDecoration(color: Colors.white, shape: BoxShape.circle, boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 10)]),
+                      child: Icon(Icons.chat_bubble_rounded, color: brandTeal, size: 24),
+                    ),
+                  ),
+                  Positioned(
+                    bottom: 40,
+                    left: 20,
+                    child: Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: const BoxDecoration(color: Colors.white, shape: BoxShape.circle, boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 10)]),
+                      child: Icon(Icons.psychology_rounded, color: brandTeal, size: 24),
+                    ),
                   ),
                 ],
               ),
             ),
-
-            const SizedBox(height: 20),
-
-            // Enhanced Empty State Section - Conditional Visibility
-            if (!hasHistory)
-              Center(
-                child: Column(
-                  children: [
-                    _buildPremiumIllustration(),
-                    const SizedBox(height: 32),
-                    Text(
-                      'Begin Your Story',
-                      style: GoogleFonts.outfit(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w900,
-                        color: AppTheme.textDark,
-                        letterSpacing: -0.2,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 40),
-                      child: Text(
-                        'Your personal history is empty. Every journey of a thousand miles begins with a single step.',
-                        textAlign: TextAlign.center,
-                        style: GoogleFonts.outfit(
-                          fontSize: 12,
-                          color: AppTheme.textLight,
-                          height: 1.5,
-                          fontWeight: FontWeight.w400,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 20),
-                    
-                    // Primary Start Button
-                    GestureDetector(
-                      onTap: () => navigationKey.currentState?.setIndex(1),
-                      child: Container(
-                        width: 220,
-                        height: 54,
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(27),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withOpacity(0.04),
-                              blurRadius: 10,
-                              offset: const Offset(0, 4),
-                            ),
-                          ],
-                          border: Border.all(color: AppTheme.primaryTeal.withOpacity(0.1)),
-                        ),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            const Icon(Icons.add_rounded, color: AppTheme.primaryTeal, size: 20),
-                            const SizedBox(width: 8),
-                            Text(
-                              'Start First Check-in',
-                              style: GoogleFonts.outfit(
-                                color: AppTheme.primaryTeal,
-                                fontWeight: FontWeight.bold,
-                                fontSize: 14,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
             
-            if (hasHistory)
-              // This is where real history cards would go in the future
-              Center(
-                child: Text(
-                  'Your Check-in History',
-                  style: GoogleFonts.outfit(
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                    color: AppTheme.textDark,
-                  ),
-                ),
-              ),
-
-            const SizedBox(height: 20),
-            
-            // Suggestion Section
+            const SizedBox(height: 30),
             Text(
-              'Quick Insights',
-              style: GoogleFonts.outfit(
+              "No sessions yet",
+              style: TextStyle(
                 fontSize: 16,
-                fontWeight: FontWeight.bold,
-                color: AppTheme.textDark,
+                fontWeight: FontWeight.w800,
+                color: textColor,
               ),
             ),
-            const SizedBox(height: 16),
-            _buildInsightTip('Practice breathing for 2 minutes to reduce daily stress by 15%'),
-            _buildInsightTip('Your mood is usually more stable on Monday mornings'),
+            const SizedBox(height: 8),
+            Text(
+              "Start your first breathing session",
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 13,
+                color: subTextColor,
+              ),
+            ),
+            const SizedBox(height: 40),
+            
+            SizedBox(
+              width: double.infinity,
+              height: 55,
+              child: ElevatedButton.icon(
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (context) => const BreathingScreen()),
+                  );
+                },
+                icon: const Icon(Icons.add_comment_rounded, color: Colors.white, size: 20),
+                label: const Text(
+                  "Start Session",
+                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+                ),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: brandTeal,
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(25),
+                  ),
+                  elevation: 0,
+                ),
+              ),
+            ),
           ],
         ),
       ),
-    );
-  }
-
-  Widget _buildStatItem(String val, String label) {
-    return Column(
-      children: [
-        Text(val, style: GoogleFonts.outfit(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w900)),
-        const SizedBox(height: 4),
-        Text(label, style: GoogleFonts.outfit(color: Colors.white.withOpacity(0.8), fontSize: 12, fontWeight: FontWeight.w600)),
-      ],
-    );
-  }
-
-  Widget _buildInsightTip(String tip) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: const Color(0xFFF0F0F0)),
-      ),
-      child: Row(
-        children: [
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(color: AppTheme.primaryTeal.withOpacity(0.1), borderRadius: BorderRadius.circular(10)),
-            child: const Icon(Icons.lightbulb_outline_rounded, color: AppTheme.primaryTeal, size: 18),
-          ),
-          const SizedBox(width: 16),
-          Expanded(child: Text(tip, style: GoogleFonts.outfit(fontSize: 13, color: AppTheme.textDark, height: 1.4, fontWeight: FontWeight.w500))),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildPremiumIllustration() {
-    return Stack(
-      alignment: Alignment.center,
-      children: [
-        // Layered Ambient Circles
-        Container(
-          width: 180,
-          height: 180,
-          decoration: BoxDecoration(
-            color: AppTheme.primaryTeal.withOpacity(0.04),
-            shape: BoxShape.circle,
-          ),
-        ),
-        Container(
-          width: 130,
-          height: 130,
-          decoration: BoxDecoration(
-            color: AppTheme.primaryTeal.withOpacity(0.06),
-            shape: BoxShape.circle,
-          ),
-        ),
-        // Main Graphical Element
-        Container(
-          width: 90,
-          height: 90,
-          decoration: BoxDecoration(
-            gradient: AppTheme.primaryGradient,
-            shape: BoxShape.circle,
-            boxShadow: [
-              BoxShadow(
-                color: AppTheme.primaryTeal.withOpacity(0.3),
-                blurRadius: 15,
-                offset: const Offset(0, 8),
-              ),
-            ],
-          ),
-          child: const Icon(Icons.auto_stories_rounded, size: 32, color: Colors.white),
-        ),
-        // Decorative Accents
-        Positioned(
-          top: 24,
-          right: 24,
-          child: Container(
-            padding: const EdgeInsets.all(6),
-            decoration: const BoxDecoration(color: Colors.white, shape: BoxShape.circle, boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 4)]),
-            child: const Icon(Icons.favorite, size: 12, color: AppTheme.primaryTeal),
-          ),
-        ),
-      ],
     );
   }
 }

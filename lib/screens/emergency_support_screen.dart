@@ -3,9 +3,9 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:shimmer/shimmer.dart';
-import '../theme/app_theme.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:telephony/telephony.dart'; 
 import 'emergency_settings_screen.dart';
 
 class EmergencySupportScreen extends StatefulWidget {
@@ -15,16 +15,28 @@ class EmergencySupportScreen extends StatefulWidget {
   State<EmergencySupportScreen> createState() => _EmergencySupportScreenState();
 }
 
-class _EmergencySupportScreenState extends State<EmergencySupportScreen> with TickerProviderStateMixin {
+class _EmergencySupportScreenState extends State<EmergencySupportScreen>
+    with TickerProviderStateMixin {
   late AnimationController _pulseController;
   late Animation<double> _scaleAnimation;
   late AnimationController _rippleController;
-  late AnimationController _callingController;
+
+  final Telephony telephony = Telephony.instance; 
+  static const Color myPrimaryColor = Color(0xFF26C6DA);
+
+  String savedContactName = "Loading...";
+  String savedContactPhone = "";
+  bool isAutoSMSEnabled = true;
+  bool _isSending = false;
 
   @override
   void initState() {
     super.initState();
-    // Pulse animation for the button itself
+    _initAnimations();
+    _fetchContactData();
+  }
+
+  void _initAnimations() {
     _pulseController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 1200),
@@ -34,487 +46,449 @@ class _EmergencySupportScreenState extends State<EmergencySupportScreen> with Ti
       CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
     );
 
-    // Radiating ripple animation for the background
     _rippleController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 2000),
     )..repeat();
+  }
 
-    // Small calling icon animation
-    _callingController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 600),
-    )..repeat(reverse: true);
+  Future<void> _fetchContactData() async {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user != null) {
+        DocumentSnapshot doc = await FirebaseFirestore.instance
+            .collection('users')
+            .doc(user.uid)
+            .get();
+
+        if (doc.exists && doc.data() != null) {
+          var data = doc.data() as Map<String, dynamic>;
+          if (data.containsKey('emergency_contact')) {
+            setState(() {
+              savedContactName =
+                  data['emergency_contact']['name'] ?? "Personal Contact";
+              savedContactPhone = data['emergency_contact']['phone'] ?? "";
+              isAutoSMSEnabled = data['emergency_contact']['auto_sms'] ?? true;
+            });
+          }
+        }
+      }
+    } catch (e) {
+      setState(() => savedContactName = "Set Contact in Settings");
+    }
+  }
+
+  // --- NEW: WHATSAPP LOGIC ---
+  Future<void> _sendWhatsAppAlert(String message) async {
+    if (savedContactPhone.isEmpty) return;
+
+    // Formatting number for WhatsApp (removing 0 and adding 92)
+    String formattedNumber = savedContactPhone;
+    if (formattedNumber.startsWith('0')) {
+      formattedNumber = '92${formattedNumber.substring(1)}';
+    } else if (!formattedNumber.startsWith('92')) {
+      formattedNumber = '92$formattedNumber';
+    }
+
+    final Uri whatsappUrl = Uri.parse(
+      "whatsapp://send?phone=$formattedNumber&text=${Uri.encodeComponent(message)}"
+    );
+
+    if (await canLaunchUrl(whatsappUrl)) {
+      await launchUrl(whatsappUrl);
+    } else {
+      debugPrint("WhatsApp not installed");
+    }
+  }
+
+  Future<void> _sendEmergencyAlert() async {
+    if (savedContactPhone.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text("Please set an emergency contact in Settings first!"),
+        ),
+      );
+      return;
+    }
+
+    setState(() => _isSending = true);
+
+    try {
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) {
+          setState(() => _isSending = false);
+          return;
+        }
+      }
+
+      Position position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+      );
+
+      final String mapsUrl = 'http://maps.google.com/?q=${position.latitude},${position.longitude}';
+      final String message = 'EMERGENCY! I am using Mindful Haven and I am in distress. My current location: $mapsUrl';
+
+      // 1. Send SMS Automatically (Direct)
+      bool? permissionsGranted = await telephony.requestPhoneAndSmsPermissions;
+
+      if (permissionsGranted != null && permissionsGranted) {
+        await telephony.sendSms(
+          to: savedContactPhone,
+          message: message,
+          statusListener: (SendStatus status) {
+            if (status == SendStatus.SENT) {
+              debugPrint("SMS Sent Successfully");
+            }
+          },
+        );
+        
+        // 2. Open WhatsApp for secondary alert
+        await _sendWhatsAppAlert(message);
+
+      } else {
+        throw 'SMS Permission Denied';
+      }
+      
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("Error: $e")),
+      );
+    } finally {
+      setState(() => _isSending = false);
+    }
+  }
+
+  Future<void> _makeCall(String number) async {
+    if (number.isEmpty) return;
+    final Uri url = Uri.parse('tel:$number');
+    if (await canLaunchUrl(url)) {
+      await launchUrl(url);
+    }
   }
 
   @override
   void dispose() {
     _pulseController.dispose();
     _rippleController.dispose();
-    _callingController.dispose();
     super.dispose();
-  }
-
-  Future<void> _makeCall(String number) async {
-    final Uri url = Uri.parse('tel:$number');
-    if (await canLaunchUrl(url)) {
-      await launchUrl(url);
-    } else {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Could not launch dialer')),
-        );
-      }
-    }
-  }
-
-  Future<void> _sendEmergencyAlert() async {
-    try {
-      LocationPermission permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
-        if (permission == LocationPermission.denied) return;
-      }
-      
-      Position position = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high
-      );
-
-      final prefs = await SharedPreferences.getInstance();
-      final contactPhone = prefs.getString('emergency_phone') ?? '+12345678901';
-      final autoSMS = prefs.getBool('auto_sms') ?? true;
-
-      if (autoSMS) {
-        final String mapsUrl = 'https://www.google.com/maps/search/?api=1&query=${position.latitude},${position.longitude}';
-        final String message = 'HELP! I am in an emergency. My current location: $mapsUrl';
-        final Uri smsUrl = Uri.parse('sms:$contactPhone?body=${Uri.encodeComponent(message)}');
-
-        if (await canLaunchUrl(smsUrl)) {
-          await launchUrl(smsUrl);
-        } else {
-           if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Could not prepare SMS')),
-            );
-          }
-        }
-      } else {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Location fetched, but SMS alerts are disabled in settings')),
-          );
-        }
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: ${e.toString()}')),
-        );
-      }
-    }
   }
 
   @override
   Widget build(BuildContext context) {
+    bool isDarkMode = Theme.of(context).brightness == Brightness.dark;
+
     return Scaffold(
-      body: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [Color(0xFFE0F2F1), Colors.white],
-          ),
-        ),
-        child: SafeArea(
-          child: Column(
-            children: [
-              const SizedBox(height: 10),
-              // Premium Glass Header
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 12, 12, 12),
-                child: Row(
+      backgroundColor: isDarkMode ? Colors.black : const Color(0xFFF8FAFD),
+      body: SafeArea(
+        child: Column(
+          children: [
+            _buildCustomHeader(isDarkMode),
+            Expanded(
+              child: SingleChildScrollView(
+                physics: const BouncingScrollPhysics(),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 24.0,
+                  vertical: 10.0,
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    _buildGlassCircle(
-                      icon: Icons.arrow_back_ios_new_rounded,
-                      onTap: () => Navigator.pop(context),
-                    ),
-                    const SizedBox(width: 16),
-                    Expanded(
-                      child: Text(
-                        'Emergency Support',
-                        style: GoogleFonts.outfit(
-                          fontWeight: FontWeight.bold, 
-                          fontSize: 18, 
-                          color: AppTheme.textDark,
-                          letterSpacing: -0.5,
-                        ),
+                    _buildSafetyHubCard(isDarkMode),
+                    const SizedBox(height: 30),
+                    Text(
+                      'HELP & SUPPORT',
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.bold,
+                        color: isDarkMode ? Colors.white70 : Colors.black,
                       ),
                     ),
-                    _buildGlassCircle(
-                      icon: Icons.settings_outlined,
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(builder: (context) => const EmergencySettingsScreen()),
-                      ),
+                    const SizedBox(height: 16),
+                    _buildNeumorphicCrisisLink(
+                      title: savedContactName,
+                      subtitle: savedContactPhone.isEmpty
+                          ? 'Tap settings to add'
+                          : 'Tap to call $savedContactPhone',
+                      iconData: Icons.person_pin_rounded,
+                      color: myPrimaryColor,
+                      onTap: () => _makeCall(savedContactPhone),
+                      titleSize: 14,
+                      isDarkMode: isDarkMode,
                     ),
+                    const SizedBox(height: 16),
+                    _buildNeumorphicCrisisLink(
+                      title: ' Prevention Help',
+                      subtitle: 'Tap to call 15(Police)',
+                      iconData: Icons.health_and_safety_rounded,
+                      color: Colors.redAccent,
+                      onTap: () => _makeCall('15'),
+                      titleSize: 14,
+                      isDarkMode: isDarkMode,
+                    ),
+                    const SizedBox(height: 30),
+                    _buildFooterDisclaimer(isDarkMode),
                   ],
                 ),
               ),
-              
-              Expanded(
-                child: SingleChildScrollView(
-                  physics: const BouncingScrollPhysics(),
-                  padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 20.0),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      // Enhanced Premium Safety Card
-                      Container(
-                        width: double.infinity,
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(28),
-                          boxShadow: [
-                            BoxShadow(
-                              color: const Color(0xFFE0F2F1).withValues(alpha: 0.5),
-                              blurRadius: 20,
-                              spreadRadius: 2,
-                              offset: const Offset(0, 10),
-                            ),
-                          ],
-                        ),
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(28),
-                          child: BackdropFilter(
-                            filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(vertical: 32, horizontal: 24),
-                              decoration: BoxDecoration(
-                                gradient: LinearGradient(
-                                  begin: Alignment.topLeft,
-                                  end: Alignment.bottomRight,
-                                  colors: [
-                                    Colors.white.withValues(alpha: 0.4),
-                                    Colors.white.withValues(alpha: 0.1),
-                                  ],
-                                ),
-                                borderRadius: BorderRadius.circular(28),
-                                border: Border.all(color: Colors.white, width: 1.5),
-                              ),
-                              child: Column(
-                                children: [
-                                  Container(
-                                    padding: const EdgeInsets.all(16),
-                                    decoration: BoxDecoration(
-                                      color: Colors.white.withValues(alpha: 0.8),
-                                      shape: BoxShape.circle,
-                                      boxShadow: [
-                                        BoxShadow(
-                                          color: Colors.redAccent.withValues(alpha: 0.15),
-                                          blurRadius: 15,
-                                        ),
-                                      ],
-                                    ),
-                                    child: const Icon(
-                                      Icons.security_rounded, 
-                                      color: Colors.redAccent, 
-                                      size: 40
-                                    ),
-                                  ),
-                                  const SizedBox(height: 20),
-                                  Text(
-                                    'Quick Safety Hub',
-                                    style: GoogleFonts.outfit(
-                                      color: AppTheme.textDark,
-                                      fontWeight: FontWeight.w700,
-                                      fontSize: 16,
-                                      letterSpacing: -0.5,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 8),
-                                  Text(
-                                    'Your location and emergency contacts are synced.',
-                                    textAlign: TextAlign.center,
-                                    style: GoogleFonts.outfit(
-                                      color: AppTheme.textLight.withValues(alpha: 0.8),
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.w300,
-                                      height: 1.5,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 20),
-                                  // Call 911 Banner Refined
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                                    decoration: BoxDecoration(
-                                      color: Colors.red[50]?.withValues(alpha: 0.5),
-                                      borderRadius: BorderRadius.circular(16),
-                                    ),
-                                    child: Row(
-                                      mainAxisAlignment: MainAxisAlignment.center,
-                                      children: [
-                                        Icon(Icons.warning_amber_rounded, color: Colors.red[700], size: 16),
-                                        const SizedBox(width: 8),
-                                        Text(
-                                          'Immediate danger? Call 911',
-                                          style: GoogleFonts.outfit(
-                                            color: Colors.red[700],
-                                            fontWeight: FontWeight.w600,
-                                            fontSize: 12,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                      
-                      const SizedBox(height: 20),
-
-                      Text(
-                        'DIRECT HELP LINKS',
-                        style: GoogleFonts.outfit(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w800,
-                          color: AppTheme.textLight,
-                          letterSpacing: 1.5,
-                        ),
-                      ),
-                      const SizedBox(height: 20),
-
-                      _buildNeumorphicCrisisLink(
-                        title: 'National Suicide Prevention',
-                        subtitle: 'Tap to call 988 for immediate help',
-                        iconData: Icons.phone_in_talk_rounded,
-                        color: Colors.blueAccent,
-                        onTap: () => _makeCall('988'),
-                        showCallingAnim: true,
-                      ),
-                      const SizedBox(height: 20),
-                      _buildNeumorphicCrisisLink(
-                        title: 'Crisis Text Line',
-                        subtitle: 'Text HOME to 741741',
-                        iconData: Icons.chat_bubble_rounded,
-                        color: AppTheme.primaryTeal,
-                        onTap: () => _makeCall('741741'),
-                      ),
-
-                      const SizedBox(height: 20),
-                      
-                      Center(
-                        child: Text(
-                          'Your safety is our priority.\nStay on the line if you call.',
-                          textAlign: TextAlign.center,
-                          style: GoogleFonts.outfit(
-                            color: AppTheme.textLight,
-                            fontSize: 12,
-                            fontWeight: FontWeight.w300,
-                            height: 1.5,
-                          ),
-                        ),
-                      ),
-                      
-                      const SizedBox(height: 50),
-
-                      // Safety Disclaimer Footer
-                      Center(
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 40),
-                          child: Text(
-                            'Mindful Haven is an AI support tool and not a replacement for professional emergency services.',
-                            textAlign: TextAlign.center,
-                            style: GoogleFonts.outfit(
-                              color: AppTheme.textLight.withValues(alpha: 0.5),
-                              fontSize: 10,
-                              fontWeight: FontWeight.w400,
-                              fontStyle: FontStyle.italic,
-                              height: 1.6,
-                            ),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 20),
-                    ],
-                  ),
-                ),
-              ),
-
-              // Radiating Emergency Alert Button
-              Padding(
-                padding: const EdgeInsets.fromLTRB(32, 16, 32, 48),
-                child: Stack(
-                  alignment: Alignment.center,
-                  children: [
-                    // Radiating Ripples
-                    AnimatedBuilder(
-                      animation: _rippleController,
-                      builder: (context, child) {
-                        return CustomPaint(
-                          painter: RipplePainter(_rippleController.value),
-                          child: const SizedBox(width: 250, height: 100),
-                        );
-                      }
-                    ),
-                    
-                    // Floating Pill Button
-                    ScaleTransition(
-                      scale: _scaleAnimation,
-                      child: GestureDetector(
-                        onTap: _sendEmergencyAlert,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 20),
-                          decoration: BoxDecoration(
-                            color: Colors.redAccent,
-                            borderRadius: BorderRadius.circular(40),
-                            boxShadow: [
-                              BoxShadow(
-                                color: Colors.redAccent.withValues(alpha: 0.4),
-                                blurRadius: 30,
-                                offset: const Offset(0, 15),
-                              ),
-                            ],
-                          ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              const Icon(Icons.emergency_share_rounded, color: Colors.white, size: 24),
-                              const SizedBox(width: 12),
-                              Text(
-                                'SEND ALERT',
-                                style: GoogleFonts.outfit(
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.w900,
-                                  letterSpacing: 1.5,
-                                  fontSize: 14,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
+            ),
+            _buildEmergencyButtonArea(),
+          ],
         ),
       ),
     );
   }
 
-  Widget _buildGlassCircle({required IconData icon, required VoidCallback onTap}) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        width: 44,
-        height: 44,
-        decoration: BoxDecoration(
-          color: Colors.white.withValues(alpha: 0.8),
-          shape: BoxShape.circle,
-          border: Border.all(color: Colors.white, width: 1.5),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.05),
-              blurRadius: 10,
-              offset: const Offset(0, 4),
+  Widget _buildCustomHeader(bool isDarkMode) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 12, 12, 12),
+      child: Row(
+        children: [
+          _buildGlassCircle(
+            icon: Icons.arrow_back_ios_new_rounded,
+            onTap: () => Navigator.pop(context),
+            isDarkMode: isDarkMode,
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Text(
+              'Emergency Support',
+              style: TextStyle(
+                fontSize: 16,
+                color: isDarkMode ? Colors.white : Colors.black,
+                fontWeight: FontWeight.bold,
+              ),
             ),
-          ],
-        ),
-        child: Icon(icon, size: 20, color: AppTheme.textDark),
+          ),
+          _buildGlassCircle(
+            icon: Icons.settings_outlined,
+            onTap: () async {
+              await Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const EmergencySettingsScreen(),
+                ),
+              );
+              _fetchContactData();
+            },
+            isDarkMode: isDarkMode,
+          ),
+        ],
       ),
     );
   }
 
   Widget _buildNeumorphicCrisisLink({
-    required String title, 
-    required String subtitle, 
-    required IconData iconData, 
+    required String title,
+    required String subtitle,
+    required IconData iconData,
     required Color color,
     required VoidCallback onTap,
-    bool showCallingAnim = false,
+    required double titleSize,
+    required bool isDarkMode,
   }) {
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        padding: const EdgeInsets.all(24),
+        padding: const EdgeInsets.all(18),
         decoration: BoxDecoration(
-          color: const Color(0xFFF5F9F9),
-          borderRadius: BorderRadius.circular(30),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.white,
-              blurRadius: 15,
-              offset: const Offset(-8, -8),
-            ),
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.05),
-              blurRadius: 15,
-              offset: const Offset(8, 8),
-            ),
-          ],
+          color: isDarkMode ? const Color(0xFF1E1E1E) : Colors.white,
+          borderRadius: BorderRadius.circular(20),
+          boxShadow: isDarkMode
+              ? null
+              : [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.05),
+                    blurRadius: 10,
+                  ),
+                ],
         ),
         child: Row(
           children: [
-            Stack(
-              alignment: Alignment.center,
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(14),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    shape: BoxShape.circle,
-                    boxShadow: [
-                      BoxShadow(color: color.withValues(alpha: 0.2), blurRadius: 10),
-                    ],
-                  ),
-                  child: Icon(iconData, color: color, size: 22),
-                ),
-                if (showCallingAnim)
-                  Positioned(
-                    right: -2,
-                    top: -2,
-                    child: FadeTransition(
-                      opacity: _callingController,
-                      child: Icon(Icons.settings_input_antenna_rounded, color: color, size: 14),
-                    ),
-                  ),
-              ],
+            CircleAvatar(
+              backgroundColor: color.withOpacity(0.1),
+              child: Icon(iconData, color: color, size: 20),
             ),
-            const SizedBox(width: 20),
+            const SizedBox(width: 16),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Shimmer.fromColors(
-                    baseColor: AppTheme.textDark,
-                    highlightColor: color.withValues(alpha: 0.3),
-                    period: const Duration(seconds: 3),
-                    child: Text(
-                      title,
-                      style: GoogleFonts.outfit(
-                        fontWeight: FontWeight.w800,
-                        fontSize: 15,
-                      ),
+                  Text(
+                    title,
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: titleSize,
+                      color: isDarkMode ? Colors.white : Colors.black,
                     ),
                   ),
-                  const SizedBox(height: 2),
                   Text(
                     subtitle,
-                    style: GoogleFonts.outfit(
-                      color: AppTheme.textLight,
+                    style: TextStyle(
+                      color: isDarkMode ? Colors.white70 : Colors.black54,
                       fontSize: 12,
-                      fontWeight: FontWeight.w300,
                     ),
                   ),
                 ],
               ),
             ),
-            Icon(Icons.chevron_right_rounded, color: AppTheme.textLight.withValues(alpha: 0.3)),
+            const Icon(Icons.call_rounded, color: Colors.green, size: 20),
           ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildEmergencyButtonArea() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(32, 16, 32, 40),
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          AnimatedBuilder(
+            animation: _rippleController,
+            builder: (context, child) => CustomPaint(
+              painter: RipplePainter(_rippleController.value),
+              child: const SizedBox(width: 250, height: 120),
+            ),
+          ),
+          ScaleTransition(
+            scale: _scaleAnimation,
+            child: GestureDetector(
+              onTap: _isSending ? null : _sendEmergencyAlert,
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 40,
+                  vertical: 22,
+                ),
+                decoration: BoxDecoration(
+                  color: Colors.redAccent,
+                  borderRadius: BorderRadius.circular(40),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.redAccent.withOpacity(0.3),
+                      blurRadius: 20,
+                      offset: const Offset(0, 10),
+                    ),
+                  ],
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _isSending
+                        ? const SizedBox(
+                            width: 24,
+                            height: 24,
+                            child: CircularProgressIndicator(
+                              color: Colors.black,
+                              strokeWidth: 2,
+                            ),
+                          )
+                        : const Icon(
+                            Icons.emergency_share_rounded,
+                            color: Colors.black,
+                            size: 24,
+                          ),
+                    const SizedBox(width: 12),
+                    Text(
+                      _isSending ? 'SENDING...' : 'SEND ALERT',
+                    style: TextStyle(
+                        color: Colors.black,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 1.2,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildGlassCircle({
+    required IconData icon,
+    required VoidCallback onTap,
+    required bool isDarkMode,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: 40,
+        height: 40,
+        decoration: BoxDecoration(
+          color: isDarkMode ? Colors.grey[900] : Colors.white,
+          shape: BoxShape.circle,
+          boxShadow: isDarkMode
+              ? null
+              : [BoxShadow(color: Colors.black12, blurRadius: 8)],
+        ),
+        child: Icon(
+          icon,
+          size: 18,
+          color: isDarkMode ? Colors.white : Colors.black,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSafetyHubCard(bool isDarkMode) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        color: isDarkMode ? const Color(0xFF1E1E1E) : Colors.white,
+        borderRadius: BorderRadius.circular(24),
+        boxShadow: isDarkMode
+            ? null
+            : [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.05),
+                  blurRadius: 10,
+                ),
+              ],
+      ),
+      child: Column(
+        children: [
+          const Icon(Icons.security_rounded, color: Colors.redAccent, size: 45),
+          const SizedBox(height: 16),
+          Text(
+            'Quick Safety Hub',
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.bold,
+              color: isDarkMode ? Colors.white : Colors.black,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'In case of danger, alert your circle immediately.',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 12,
+              color: isDarkMode ? Colors.white70 : Colors.black54,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildFooterDisclaimer(bool isDarkMode) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      child: Center(
+        child: Text(
+          'Mindful Haven is an AI tool and not a replacement for professional emergency services.',
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            fontSize: 11,
+            fontStyle: FontStyle.italic,
+            color: isDarkMode ? Colors.white60 : Colors.black45,
+          ),
         ),
       ),
     );
@@ -524,29 +498,17 @@ class _EmergencySupportScreenState extends State<EmergencySupportScreen> with Ti
 class RipplePainter extends CustomPainter {
   final double progress;
   RipplePainter(this.progress);
-
   @override
   void paint(Canvas canvas, Size size) {
-    final Paint paint = Paint()
-      ..color = Colors.redAccent.withValues(alpha: (1 - progress) * 0.3)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2;
-
-    final double maxRadius = size.width / 1.5;
-    final double radius = maxRadius * progress;
-    
-    canvas.drawCircle(Offset(size.width / 2, size.height / 2), radius, paint);
-    
-    // Draw secondary ripple
-    final double secondProgress = (progress + 0.5) % 1.0;
-    final Paint secondPaint = Paint()
-      ..color = Colors.redAccent.withValues(alpha: (1 - secondProgress) * 0.2)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.5;
-    
-    canvas.drawCircle(Offset(size.width / 2, size.height / 2), maxRadius * secondProgress, secondPaint);
+    for (int i = 3; i >= 1; i--) {
+      final double opacity = (1 - ((progress + (i / 3)) % 1)).clamp(0, 1);
+      final double radius = (size.width / 2) * ((progress + (i / 3)) % 1);
+      final Paint paint = Paint()
+        ..color = Colors.redAccent.withOpacity(opacity * 0.15);
+      canvas.drawCircle(Offset(size.width / 2, size.height / 2), radius, paint);
+    }
   }
 
   @override
-  bool shouldRepaint(RipplePainter oldDelegate) => true;
+  bool shouldRepaint(CustomPainter oldDelegate) => true;
 }

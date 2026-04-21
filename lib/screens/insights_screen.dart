@@ -1,811 +1,533 @@
-import 'dart:ui';
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart';
-import 'package:google_fonts/google_fonts.dart';
-import '../theme/app_theme.dart';
-import '../widgets/background_wrapper.dart';
-import '../services/breathing_storage_service.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:intl/intl.dart';
 import 'package:flutter_animate/flutter_animate.dart';
-import 'package:flutter/services.dart';
+import 'package:fl_chart/fl_chart.dart';
+import 'package:shimmer/shimmer.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
+import 'package:provider/provider.dart';
+import 'package:encrypt/encrypt.dart' as encrypt;
+import 'theme_provider.dart';
+import 'breathing_screen.dart'; 
+import 'chat_screen.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
+class EncryptionHelper {
+  static final key = encrypt.Key.fromUtf8('my_super_secret_key_123456789012'); 
+  static final iv = encrypt.IV.fromLength(16);
+  static final encrypter = encrypt.Encrypter(encrypt.AES(key));
 
+  static String decryptText(String encryptedText) {
+    if (encryptedText.isEmpty) return encryptedText;
+    try { return encrypter.decrypt64(encryptedText, iv: iv); } catch (e) { return encryptedText; }
+  }
+}
 
 class InsightsScreen extends StatefulWidget {
   const InsightsScreen({super.key});
-
   @override
   State<InsightsScreen> createState() => _InsightsScreenState();
 }
 
-class _InsightsScreenState extends State<InsightsScreen> with SingleTickerProviderStateMixin {
-  late AnimationController _pulseController;
-  int? _selectedMoodPoint; // 0 for peak 1, 1 for peak 2
-  bool _loadingInsights = true;
-  String _dateRange = '';
-  String _userName = 'You';
-  Map<String, String> _summaryStats = {};
-  List<double> _dailyMinutes = [];
-  List<String> _weekDays = [];
-  List<Map<String, String>> _keyInsights = [];
+class _InsightsScreenState extends State<InsightsScreen> {
+  final User? _user = FirebaseAuth.instance.currentUser;
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
-  @override
-  void initState() {
-    super.initState();
-    _pulseController = AnimationController(
-      vsync: this,
-      duration: const Duration(seconds: 2),
-    )..repeat(reverse: true);
-    _loadInsights();
+  String _selectedTab = 'Daily';
+  final DateTime _selectedDate = DateTime.now();
+  bool _isUpdating = false;
+
+  static const Color myPrimaryColor = Color(0xFF26C6DA);
+  // Purani line ko delete karke ye likhein
+final String predictUrl = dotenv.env['BERT_PREDICT_URL'] ?? "";
+
+  final Map<String, List<String>> moodTips = {
+    'joy': ["Your positive energy is amazing! Channel it into something creative.", "Happiness grows by sharing. Spread your joy today.", "Keep this beautiful smile! You're doing great."],
+    'sadness': ["It's okay to feel low. Taking a break is a form of strength.", "Every cloud has a silver lining. Stay hopeful.", "You are not alone. Small steps lead to big changes."],
+    'stress': ["Take a deep breath (4-7-8 technique). Center yourself.", "Focus on one thing at a time. You've got this.", "Hydrate and step away from the screen for 5 minutes."],
+    'neutral': ["Stay hydrated! Drink at least 8 glasses of water today.", "A perfect time for a quick 5-minute mindfulness walk.", "Reflect on one thing you are grateful for today."]
+  };
+
+  TextStyle headingStyle(bool isDark) => TextStyle(
+    fontSize: 16, fontWeight: FontWeight.w600, color: isDark ? Colors.white : Colors.black87,
+  );
+
+  bool _isTabLocked(Map<String, dynamic> userData) {
+    if (_selectedTab == 'Daily') return false;
+    DateTime? creationTime = _user?.metadata.creationTime;
+    if (creationTime == null) return true;
+    int daysSinceJoined = DateTime.now().difference(creationTime).inDays;
+    if (_selectedTab == 'Weekly' && daysSinceJoined < 7) return true;
+    if (_selectedTab == 'Monthly' && daysSinceJoined < 30) return true;
+    return false;
   }
 
-  @override
-  void dispose() {
-    _pulseController.dispose();
-    super.dispose();
+  String _getLockMessage() {
+    if (_selectedTab == 'Weekly') return "Weekly insights unlock after 7 days of activity.";
+    if (_selectedTab == 'Monthly') return "Monthly reports require 30 days of consistent data.";
+    return "";
+  }
+
+  Future<void> _refreshAIAnalysis() async {
+    if (_user == null || _isUpdating) return;
+    setState(() => _isUpdating = true);
+    try {
+      final historySnap = await _firestore.collection('chats').doc(_user!.uid).collection('history').orderBy('timestamp', descending: true).limit(1).get();
+      if (historySnap.docs.isEmpty) {
+        if (mounted) setState(() => _isUpdating = false);
+        return;
+      }
+      String latestChatId = historySnap.docs.first.id;
+      final messagesSnap = await _firestore.collection('chats').doc(_user!.uid).collection('history').doc(latestChatId).collection('messages').orderBy('timestamp', descending: true).limit(5).get();
+      String chatText = messagesSnap.docs.map((m) => EncryptionHelper.decryptText(m['text'] ?? "")).join(" ");
+      final res = await http.post(Uri.parse(predictUrl), headers: {"Content-Type": "application/json"}, body: jsonEncode({"text": chatText}));
+      if (res.statusCode == 200) {
+        String moodLabel = jsonDecode(res.body)['emotion'] ?? "Neutral";
+        String moodKey = moodLabel.toLowerCase().trim();
+        String randomTip = (moodTips[moodKey] ?? moodTips['neutral']!).first;
+        await _firestore.collection('users').doc(_user!.uid).update({
+          'latest_tip': randomTip,
+          'last_mood_detected': moodLabel,
+          'last_mood_update': FieldValue.serverTimestamp(),
+        });
+      }
+    } catch (e) { debugPrint(e.toString()); } finally { if (mounted) setState(() => _isUpdating = false); }
+  }
+
+ Future<Map<String, double>> _calculateSmartScores() async {
+    if (_user == null) return {'happy': 0.0, 'stress': 0.0, 'sad': 0.0};
+    
+    DateTime now = DateTime.now();
+    DateTime startTime;
+
+    // Daily logic: Aaj raat 12:00 AM se ab tak ka data
+    if (_selectedTab == 'Daily') {
+      startTime = DateTime(now.year, now.month, now.day);
+    } 
+    // Weekly logic: Pichle 7 din
+    else if (_selectedTab == 'Weekly') {
+      startTime = now.subtract(const Duration(days: 7));
+    } 
+    // Monthly logic: Pichle 30 din
+    else {
+      startTime = now.subtract(const Duration(days: 30));
+    }
+
+    var snapshot = await _firestore
+        .collection('users')
+        .doc(_user!.uid)
+        .collection('mood_history')
+        .where('timestamp', isGreaterThanOrEqualTo: startTime)
+        .get();
+
+    double happy = 0, sad = 0, stress = 0;
+    for (var doc in snapshot.docs) {
+      String m = doc['mood']?.toString().toLowerCase() ?? "";
+      if (['joy', 'happy', 'surprise'].contains(m)) happy++;
+      else if (['sadness', 'sad'].contains(m)) sad++;
+      else stress++;
+    }
+
+    double total = happy + sad + stress;
+    if (total == 0) return {'happy': 0.0, 'stress': 0.0, 'sad': 0.0};
+    return {'happy': happy / total, 'stress': stress / total, 'sad': sad / total};
   }
 
   @override
   Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final cardColor = isDark ? Colors.grey[900]! : Colors.white;
+    final textColor = isDark ? Colors.white : Colors.black87;
+
     return Scaffold(
-      backgroundColor: AppTheme.background,
-      body: BackgroundWrapper(
-        child: SafeArea(
-          child: SingleChildScrollView(
-            physics: const BouncingScrollPhysics(),
-            padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 20.0),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // Premium Header
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      backgroundColor: isDark ? Colors.black : const Color(0xFFF8FBFF),
+      body: SafeArea(
+        child: StreamBuilder<DocumentSnapshot>(
+          stream: _firestore.collection('users').doc(_user?.uid).snapshots(),
+          builder: (context, userSnapshot) {
+            if (!userSnapshot.hasData) return _buildGlobalShimmer();
+            final userData = userSnapshot.data?.data() as Map<String, dynamic>? ?? {};
+            bool isLocked = _isTabLocked(userData);
+
+            return RefreshIndicator(
+              onRefresh: _refreshAIAnalysis,
+              child: SingleChildScrollView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          _dateRange.isNotEmpty ? _dateRange : '—',
-                          style: GoogleFonts.outfit(
-                            fontSize: 12,
-                            color: AppTheme.textLight,
-                            fontWeight: FontWeight.w300,
-                            letterSpacing: -0.2,
-                          ),
-                        ),
-                        Text(
-                          'Weekly Insights',
-                          style: GoogleFonts.outfit(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w600,
-                            color: AppTheme.textDark,
-                            letterSpacing: -0.5,
-                          ),
-                        ),
-                      ],
-                    ),
-                    _buildHeaderAction(Icons.calendar_month_rounded),
-                  ],
-                ),
-                const SizedBox(height: 24),
-
-                // Health Summary Card (Deep Glassmorphic)
-                _buildGlassSummaryCard().animate().fadeIn(duration: 600.ms).slideY(begin: 0.1, end: 0),
-
-                const SizedBox(height: 24),
-
-                // Mood Stability Area Chart
-                _buildSectionTitle('Mood Stability'),
-                const SizedBox(height: 16),
-                _buildGlassChartContainer(
-                  child: Column(
-                    children: [
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Text('Emotional Flow',
-                              style: GoogleFonts.outfit(
-                                  fontSize: 14, color: AppTheme.textLight, fontWeight: FontWeight.w300)),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                            decoration: BoxDecoration(
-                              color: Colors.green.withOpacity(0.1),
-                              borderRadius: BorderRadius.circular(20),
-                            ),
-                            child: Text('+15% Calm',
-                                style: GoogleFonts.outfit(
-                                    fontSize: 12, color: Colors.green, fontWeight: FontWeight.w700)),
-                          ),
-                        ],
+                    _buildTopHeader(textColor),
+                    const SizedBox(height: 20),
+                    _buildCalendarStrip(cardColor, textColor),
+                    const SizedBox(height: 20),
+                    _buildTimeToggle(isDark),
+                    const SizedBox(height: 25),
+                    if (isLocked) 
+                      _buildLockedView(cardColor, isDark) 
+                    else ...[
+                      _buildStatsRow(_getDisplayTime(userData), (userData['sessions_count'] ?? 0).toString(), cardColor, isDark),
+                      const SizedBox(height: 25),
+                      FutureBuilder<Map<String, double>>(
+                        future: _calculateSmartScores(),
+                        builder: (context, snap) {
+                          if (snap.connectionState == ConnectionState.waiting) return const SizedBox(height: 100, child: Center(child: CircularProgressIndicator()));
+                          final s = snap.data ?? {'happy': 0.0, 'stress': 0.0, 'sad': 0.0};
+                          return _buildEmotionBreakdown(s['happy']!, s['stress']!, s['sad']!, cardColor, isDark);
+                        }
                       ),
-                      const SizedBox(height: 24),
-                      GestureDetector(
-                        onTapDown: (details) {
-                          HapticFeedback.lightImpact();
-                          final localPos = details.localPosition;
-                          final w = MediaQuery.of(context).size.width;
-                          if (_dailyMinutes.isNotEmpty) {
-                            final idxNum = ((localPos.dx / w) * (_dailyMinutes.length - 1)).round().clamp(0, _dailyMinutes.length - 1);
-                            final idx = idxNum.toInt();
-                            setState(() => _selectedMoodPoint = idx);
-                          } else {
-                            setState(() => _selectedMoodPoint = null);
-                          }
-                        },
-                        child: Stack(
-                          children: [
-                            SizedBox(
-                              height: MediaQuery.of(context).size.height * 0.22,
-                              width: double.infinity,
-                              child: CustomPaint(
-                                painter: _SophisticatedAreaChartPainter(
-                                  selectedPoint: _selectedMoodPoint,
-                                  data: _dailyMinutes,
-                                ),
-                              ),
-                            ),
-                            if (_selectedMoodPoint != null)
-                              Builder(builder: (ctx) {
-                                final w = MediaQuery.of(ctx).size.width;
-                                final idx = _selectedMoodPoint!.clamp(0, (_dailyMinutes.isNotEmpty ? _dailyMinutes.length - 1 : 0)).toInt();
-                                final left = _dailyMinutes.isNotEmpty && _dailyMinutes.length > 1
-                                    ? (idx / (_dailyMinutes.length - 1)) * w
-                                    : w * 0.5;
-                                final valueText = (_dailyMinutes.isNotEmpty && idx < _dailyMinutes.length)
-                                    ? '${_dailyMinutes[idx].toInt()}m'
-                                    : '—';
-                                return Positioned(
-                                  top: 18,
-                                  left: (left - 48).clamp(8.0, w - 120.0),
-                                  child: Container(
-                                    padding: const EdgeInsets.all(8),
-                                    decoration: BoxDecoration(
-                                      color: Colors.white,
-                                      borderRadius: BorderRadius.circular(12),
-                                      boxShadow: [
-                                        BoxShadow(color: Colors.black.withValues(alpha: 0.1), blurRadius: 10),
-                                      ],
-                                      border: Border.all(color: AppTheme.primaryTeal.withOpacity(0.2)),
-                                    ),
-                                    child: Text(
-                                      'Mood: $valueText',
-                                      style: GoogleFonts.outfit(fontSize: 12, fontWeight: FontWeight.w900, color: AppTheme.primaryTeal),
-                                    ),
-                                  ),
-                                );
-                              }),
-                          ],
-                        ),
+                      const SizedBox(height: 25),
+                      StreamBuilder<QuerySnapshot>(
+                        stream: _firestore.collection('users').doc(_user!.uid).collection('breathing_history').orderBy('timestamp', descending: true).snapshots(),
+                        builder: (context, bSnap) {
+                          return _buildMoodTrendSection(_processHistoryToBars(bSnap.data?.docs ?? []), cardColor, isDark);
+                        }
                       ),
-                      const SizedBox(height: 20),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: (_weekDays.isNotEmpty ? _weekDays : ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'])
-                            .map((day) => Expanded(
-                                  child: Center(
-                                    child: Text(day,
-                                        style: GoogleFonts.outfit(
-                                            fontSize: 12, color: AppTheme.textLight, fontWeight: FontWeight.w600)),
-                                  ),
-                                ))
-                            .toList(),
-                      ),
+                      const SizedBox(height: 25),
+                      _buildAIInsightsCard(userData, isDark),
+                      const SizedBox(height: 16),
+                      _buildSmartActionButton(userData['last_mood_detected'] ?? "Neutral"),
                     ],
-                  ),
-                ).animate(delay: 300.ms).fadeIn(duration: 800.ms).scaleXY(begin: 0.95),
-
-                const SizedBox(height: 24),
-
-                // Mindful Minutes Bar Chart
-                _buildSectionTitle('Mindful Minutes'),
-                const SizedBox(height: 16),
-                _buildGlassChartContainer(
-                  child: Column(
-                    children: [
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Text('Daily Usage',
-                              style: GoogleFonts.outfit(
-                                  fontSize: 14, color: AppTheme.textLight, fontWeight: FontWeight.w300)),
-                          Text(
-                            _dailyMinutes.isNotEmpty
-                                    ? '${_dailyMinutes.map((d) => d.toInt()).reduce((a, b) => a + b)}m Total'
-                                : '—',
-                            style: GoogleFonts.outfit(
-                                fontSize: 14, color: AppTheme.primaryTeal, fontWeight: FontWeight.w900),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 24),
-                      if (_dailyMinutes.isEmpty)
-                        Center(child: Text('No usage data yet', style: GoogleFonts.outfit(color: AppTheme.textLight)))
-                      else
-                        SizedBox(
-                          height: 160,
-                          child: LayoutBuilder(builder: (context, constraints) {
-                                final maxVal = _dailyMinutes.isNotEmpty ? _dailyMinutes.reduce((a, b) => a > b ? a : b) : 0.0;
-                            final barMaxHeight = constraints.maxHeight > 0 ? constraints.maxHeight * 0.6 : 120.0;
-                            return Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                              crossAxisAlignment: CrossAxisAlignment.end,
-                              children: List.generate(_dailyMinutes.length, (i) {
-                                final val = _dailyMinutes[i];
-                                final factor = maxVal > 0 ? (val / maxVal) : 0.0;
-                                final label = i < _weekDays.length ? _weekDays[i].substring(0, 1) : ['M', 'T', 'W', 'T', 'F', 'S', 'S'][i];
-                                return _buildAnimatedBar(factor, label, maxBarHeight: barMaxHeight, isPulsing: i == _dailyMinutes.length - 1)
-                                    .animate(delay: (i * 100).ms)
-                                    .fadeIn()
-                                    .slideY(begin: 0.5, end: 0, curve: Curves.easeOutBack);
-                              }),
-                            );
-                          }),
-                        ),
-                    ],
-                  ),
-                ).animate(delay: 300.ms).fadeIn(duration: 800.ms).scaleXY(begin: 0.95),
-
-                const SizedBox(height: 24),
-
-                // Key Insights Section
-                _buildSectionTitle('Key Observations'),
-                const SizedBox(height: 16),
-                if (_keyInsights.isEmpty)
-                  Center(child: Text('No insights available yet', style: GoogleFonts.outfit(color: AppTheme.textLight)))
-                else
-                      ..._keyInsights.map((ins) {
-                        final iconCode = int.tryParse(ins['icon'] ?? '') ?? Icons.help.codePoint;
-                        final col = int.tryParse(ins['color'] ?? '') ?? AppTheme.primaryTeal.value;
-                        return _buildInsightTile(
-                            icon: IconData(iconCode, fontFamily: 'MaterialIcons'),
-                            color: Color(col),
-                            title: ins['title'] ?? 'Insight',
-                            desc: ins['desc'] ?? '');
-                      }).toList(),
-                const SizedBox(height: 32),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Future<void> _loadInsights() async {
-    // Default: load last 7 days ending today
-    final now = DateTime.now();
-    final start = DateTime(now.year, now.month, now.day).subtract(const Duration(days: 6));
-    final end = DateTime(now.year, now.month, now.day);
-    await _loadInsightsForRange(start, end);
-  }
-
-  /// Show a date range picker and reload insights for the chosen range.
-  Future<void> _pickDateRange() async {
-    final now = DateTime.now();
-    final defaultStart = DateTime(now.year, now.month, now.day).subtract(const Duration(days: 6));
-    final defaultEnd = DateTime(now.year, now.month, now.day);
-
-    final picked = await showDateRangePicker(
-      context: context,
-      firstDate: DateTime(2000),
-      lastDate: DateTime(now.year + 1),
-      initialDateRange: DateTimeRange(start: defaultStart, end: defaultEnd),
-    );
-
-    if (picked == null) return; // cancelled
-
-    await _loadInsightsForRange(picked.start, picked.end);
-  }
-
-  /// Load insights for an arbitrary [start]..[end] date range (inclusive).
-  Future<void> _loadInsightsForRange(DateTime start, DateTime end) async {
-    setState(() {
-      _loadingInsights = true;
-    });
-
-    final svc = BreathingStorageService();
-    // small delay to simulate real fetch latency
-    await Future.delayed(const Duration(milliseconds: 150));
-
-    // Format date range for header
-    final fmt = DateFormat.MMMd();
-    _dateRange = '${fmt.format(start)} - ${fmt.format(end)}';
-
-    // Basic static user/summary data
-    _userName = 'You';
-    _summaryStats = {'sleep': '—', 'heart': '—', 'steps': '—'};
-
-    try {
-      final sessions = await svc.getAllSessions();
-
-      // prepare keys for each day in range
-      final daysCount = end.difference(start).inDays + 1;
-      final days = List<DateTime>.generate(daysCount, (i) => DateTime(start.year, start.month, start.day).add(Duration(days: i)));
-
-      // accumulate seconds per dayKey
-      final Map<String, int> totals = {};
-      for (final s in sessions) {
-        final ts = DateTime.fromMillisecondsSinceEpoch(s['ts']!);
-        final dayKey = '${ts.year}-${ts.month}-${ts.day}';
-        if (!ts.isBefore(start) && !ts.isAfter(end)) {
-          totals[dayKey] = (totals[dayKey] ?? 0) + (s['duration'] ?? 0);
-        }
-      }
-
-      // build minutes list aligned with days[]
-      final List<double> minutes = [];
-      for (final d in days) {
-        final key = '${d.year}-${d.month}-${d.day}';
-        final secs = totals[key] ?? 0;
-        minutes.add(secs / 60.0);
-      }
-
-      _dailyMinutes = minutes;
-      // weekday short names for labels
-      _weekDays = days.map((d) => DateFormat.E().format(d)).toList();
-
-      // key insights: simple heuristics with guards
-      _keyInsights = [];
-      if (_dailyMinutes.isNotEmpty) {
-        final avg = _dailyMinutes.isNotEmpty ? (_dailyMinutes.reduce((a, b) => a + b) / _dailyMinutes.length) : 0.0;
-        final lastMin = _dailyMinutes.last;
-        if (lastMin >= avg && lastMin > 0) {
-          _keyInsights.add({
-            'icon': Icons.emoji_emotions_outlined.codePoint.toString(),
-            'color': Colors.green.value.toString(),
-            'title': 'Great Today',
-            'desc': 'You spent ${lastMin.toInt()}m today — above period average.',
-          });
-        } else if (lastMin > 0) {
-          _keyInsights.add({
-            'icon': Icons.access_time_filled.codePoint.toString(),
-            'color': Colors.orange.value.toString(),
-            'title': 'Keep Going',
-            'desc': 'Today: ${lastMin.toInt()}m — try a short session to boost your streak.',
-          });
-        }
-      }
-    } catch (e) {
-      _dailyMinutes = [];
-      _weekDays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-      _keyInsights = [];
-    }
-
-    setState(() => _loadingInsights = false);
-  }
-
-  Widget _buildSectionTitle(String title) {
-    return Text(
-      title,
-      style: GoogleFonts.outfit(
-        fontSize: 16,
-        fontWeight: FontWeight.w900,
-        color: AppTheme.textDark,
-        letterSpacing: -0.5,
-      ),
-    );
-  }
-
-  Widget _buildHeaderAction(IconData icon) {
-    return GestureDetector(
-      onTap: _pickDateRange,
-      child: Container(
-        width: 44,
-        height: 44,
-        decoration: BoxDecoration(
-          color: Colors.white.withOpacity(0.8),
-          shape: BoxShape.circle,
-          boxShadow: [
-            BoxShadow(
-                color: AppTheme.primaryTeal.withOpacity(0.1), blurRadius: 15, offset: const Offset(0, 4)),
-          ],
-        ),
-        child: Icon(icon, color: AppTheme.primaryTeal, size: 22),
-      ),
-    );
-  }
-
-  Widget _buildGlassSummaryCard() {
-    return Container(
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(32),
-        boxShadow: [
-          BoxShadow(
-            color: AppTheme.primaryTeal.withOpacity(0.08),
-            blurRadius: 30,
-            offset: const Offset(0, 15),
-          ),
-        ],
-      ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(32),
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-          child: Container(
-            padding: const EdgeInsets.all(28),
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [
-                  Colors.white.withValues(alpha: 0.7),
-                  Colors.white.withValues(alpha: 0.3),
-                ],
-              ),
-              borderRadius: BorderRadius.circular(32),
-              border: Border.all(color: Colors.white.withOpacity(0.8), width: 1.5),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Container(
-                      width: 44,
-                      height: 44,
-                      decoration: BoxDecoration(
-                        gradient: AppTheme.primaryGradient,
-                        shape: BoxShape.circle,
-                        border: Border.all(color: Colors.white, width: 2),
-                      ),
-                      child: const Center(
-                          child: Icon(Icons.person_outline_rounded, color: Colors.white, size: 20)),
-                    ),
-                    const SizedBox(width: 16),
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          "${_userName}'s Dashboard",
-                          style: GoogleFonts.outfit(
-                              fontSize: 16,
-                              fontWeight: FontWeight.w900,
-                              color: AppTheme.textDark,
-                              letterSpacing: -0.5),
-                        ),
-                        Text(
-                          "Personal Health Summary",
-                          style: GoogleFonts.outfit(
-                              fontSize: 12, fontWeight: FontWeight.w300, color: AppTheme.textLight),
-                        ),
-                      ],
-                    ),
+                    const SizedBox(height: 40),
                   ],
-                ),
-                const SizedBox(height: 24),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    _buildSummaryStat(_summaryStats['sleep'] ?? '—', 'Sleep Avg', Icons.nightlight_round_rounded, Colors.indigoAccent),
-                    _buildSummaryStat(_summaryStats['heart'] ?? '—', 'Avg Heart', Icons.favorite_rounded, AppTheme.primaryTeal),
-                    _buildSummaryStat(_summaryStats['steps'] ?? '—', 'Steps Count', Icons.directions_walk_rounded, Colors.orangeAccent),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                // Average mindful minutes indicator
-                Builder(builder: (ctx) {
-                  final avg = _dailyMinutes.isNotEmpty ? (_dailyMinutes.reduce((a, b) => a + b) / _dailyMinutes.length) : 0.0;
-                  const target = 60.0;
-                  final pct = (avg / target).clamp(0.0, 1.0);
-                  return Row(
-                    children: [
-                      SizedBox(
-                        width: 68,
-                        height: 68,
-                        child: Stack(
-                          alignment: Alignment.center,
-                          children: [
-                            CircularProgressIndicator(
-                              value: pct,
-                              strokeWidth: 6,
-                               valueColor: AlwaysStoppedAnimation(AppTheme.primaryTeal),
-                               backgroundColor: AppTheme.primaryTeal.withOpacity(0.12),
-                            ),
-                            Text(
-                              '${avg.toInt()}m',
-                              style: GoogleFonts.outfit(fontSize: 14, fontWeight: FontWeight.w700, color: AppTheme.textDark),
-                            ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(width: 16),
-                      Expanded(
-                        child: Text(
-                          'Avg mindfulness minutes/day — ${pct >= 1.0 ? 'On target' : 'Keep going'}',
-                          style: GoogleFonts.outfit(fontSize: 13, color: AppTheme.textLight, fontWeight: FontWeight.w500),
-                        ),
-                      ),
-                    ],
-                  );
-                }),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildSummaryStat(String val, String label, IconData icon, Color color) {
-    return Column(
-      children: [
-        Container(
-          width: 48,
-          height: 48,
-          decoration: BoxDecoration(
-            color: color.withValues(alpha: 0.1),
-            borderRadius: BorderRadius.circular(16),
-          ),
-          child: Icon(icon, color: color, size: 20),
-        ),
-        const SizedBox(height: 12),
-        Text(val,
-            style: GoogleFonts.outfit(fontSize: 14, fontWeight: FontWeight.w900, color: AppTheme.textDark)),
-        Text(label,
-            style: GoogleFonts.outfit(fontSize: 12, color: AppTheme.textLight, fontWeight: FontWeight.w300)),
-      ],
-    );
-  }
-
-  Widget _buildGlassChartContainer({required Widget child}) {
-    return Container(
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(32),
-        boxShadow: [
-          BoxShadow(
-            color: AppTheme.primaryTeal.withOpacity(0.05),
-            blurRadius: 20,
-            offset: const Offset(0, 10),
-          ),
-        ],
-      ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(32),
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-          child: Container(
-            padding: const EdgeInsets.all(24),
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [
-                  Colors.white.withValues(alpha: 0.7),
-                  Colors.white.withValues(alpha: 0.3),
-                ],
-              ),
-              borderRadius: BorderRadius.circular(32),
-              border: Border.all(color: Colors.white.withValues(alpha: 0.5), width: 0.5),
-            ),
-            child: child,
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildAnimatedBar(double heightFactor, String label, {bool isPulsing = false, double? maxBarHeight}) {
-    return Column(
-      children: [
-        AnimatedBuilder(
-          animation: _pulseController,
-          builder: (context, child) {
-            final scale = isPulsing ? 1.0 + (_pulseController.value * 0.1) : 1.0;
-            return Transform.scale(
-              scaleX: scale,
-              scaleY: scale,
-              alignment: Alignment.bottomCenter,
-              child: Container(
-                width: 16,
-                height: (() {
-                  final base = maxBarHeight ?? (MediaQuery.of(context).size.height * 0.18);
-                  final raw = heightFactor * base;
-                  final upper = MediaQuery.of(context).size.height * 0.5;
-                  return raw.clamp(8.0, upper);
-                })(),
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    colors: [AppTheme.primaryTeal, AppTheme.primaryTeal.withOpacity(0.4)],
-                    begin: Alignment.topCenter,
-                    end: Alignment.bottomCenter,
-                  ),
-                  borderRadius: BorderRadius.circular(12),
-                  boxShadow: [
-                      BoxShadow(
-                      color: AppTheme.primaryTeal
-                          .withOpacity(isPulsing ? 0.3 * _pulseController.value : 0.1),
-                      blurRadius: isPulsing ? 15 : 10,
-                      offset: const Offset(0, 4),
-                    ),
-                  ],
-                ),
+                ).animate().fadeIn(duration: 500.ms),
               ),
             );
           },
         ),
-        const SizedBox(height: 12),
-        Text(label,
-            style: GoogleFonts.outfit(fontSize: 12, color: AppTheme.textLight, fontWeight: FontWeight.w900)),
-      ],
+      ),
     );
   }
 
-  Widget _buildInsightTile(
-      {required IconData icon, required Color color, required String title, required String desc}) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(24),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-        child: Container(
-          margin: const EdgeInsets.only(bottom: 16),
-          padding: const EdgeInsets.all(20),
-          decoration: BoxDecoration(
-            color: Colors.white.withValues(alpha: 0.4),
-            borderRadius: BorderRadius.circular(24),
-            border: Border.all(color: Colors.white.withValues(alpha: 0.5), width: 0.5),
-          ),
-          child: Row(
-            children: [
-              Container(
-                width: 52,
-                height: 52,
-                decoration: BoxDecoration(
-                  color: color.withValues(alpha: 0.1),
-                  borderRadius: BorderRadius.circular(18),
-                ),
-                child: Icon(icon, color: color, size: 24),
-              ),
-              const SizedBox(width: 20),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(title,
-                        style: GoogleFonts.outfit(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w900,
-                            color: AppTheme.textDark,
-                            letterSpacing: -0.2)),
-                    const SizedBox(height: 4),
-                    Text(
-                      desc,
-                      style: GoogleFonts.outfit(
-                        fontSize: 14,
-                        color: AppTheme.textLight,
-                        height: 1.6,
-                        fontWeight: FontWeight.w300,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
+  Widget _buildSmartActionButton(String mood) {
+    String label = "Start Quick Session";
+    IconData icon = Icons.play_arrow_rounded;
+    Widget targetScreen = const BreathingScreen(); 
+    
+    if (mood.toLowerCase().contains("stress")) { 
+      label = "Start Breathing Exercise"; 
+      icon = Icons.air_rounded;
+      targetScreen = const BreathingScreen();
+    }
+    else if (mood.toLowerCase().contains("sad")) { 
+      label = "Chat with Mindful AI"; 
+      icon = Icons.chat_bubble_outline_rounded;
+      targetScreen = const ChatScreen();
+    }
+    else if (mood.toLowerCase().contains("happy")) { 
+      label = "Reflect & Connect"; 
+      icon = Icons.favorite_border_rounded;
+      targetScreen = const ChatScreen();
+    }
+
+    return SizedBox(
+      width: double.infinity,
+      height: 55,
+      child: ElevatedButton.icon(
+        onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (context) => targetScreen)),
+        icon: Icon(icon, color: Colors.white),
+        label: Text(label, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+        style: ElevatedButton.styleFrom(
+          backgroundColor: myPrimaryColor,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          elevation: 0,
         ),
       ),
     );
   }
-}
 
-class _SophisticatedAreaChartPainter extends CustomPainter {
-  final int? selectedPoint;
-  final List<double>? data;
-  _SophisticatedAreaChartPainter({this.selectedPoint, this.data});
+Widget _buildTopHeader(Color textColor) => Row(
+    children: [
+      Container(
+        padding: const EdgeInsets.all(8), 
+        decoration: BoxDecoration(
+          color: myPrimaryColor.withOpacity(0.1), 
+          borderRadius: BorderRadius.circular(10)
+        ), 
+        child: const Icon(Icons.insights_rounded, color: myPrimaryColor, size: 20)
+      ),
+      const SizedBox(width: 12), 
+      Text(
+        "Your Insights", 
+        style: headingStyle(true).copyWith(color: textColor, fontSize: 18)
+      ),
+      // Spacer sab kuch left side pe rakhe ga aur right side khali rahay gi
+      const Spacer(), 
+    ],
+  );
 
-  @override
-  void paint(Canvas canvas, Size size) {
-    // If we have data, draw area chart based on data; otherwise fallback to decorative path.
-    if (data == null || data!.isEmpty) {
-      // fallback decorative path
-      final shadowPaint = Paint()
-        ..color = AppTheme.primaryTeal.withOpacity(0.3)
-        ..strokeWidth = 8
-        ..style = PaintingStyle.stroke
-        ..strokeCap = StrokeCap.round
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10);
+  Widget _buildCalendarStrip(Color cardColor, Color textColor) => InkWell(
+    onTap: () async {
+      // Is se real calendar khule ga
+      await showDatePicker(
+        context: context, 
+        initialDate: _selectedDate, 
+        firstDate: DateTime(2024), 
+        lastDate: DateTime.now(),
+        builder: (context, child) => Theme(
+          data: Theme.of(context).copyWith(
+            colorScheme: const ColorScheme.light(primary: myPrimaryColor),
+          ),
+          child: child!,
+        ),
+      );
+    },
+    child: Container(
+      padding: const EdgeInsets.all(16), 
+      decoration: BoxDecoration(
+        color: cardColor, 
+        borderRadius: BorderRadius.circular(20), 
+        border: Border.all(color: myPrimaryColor.withOpacity(0.1))
+      ),
+      child: Row(children: [
+        const Icon(Icons.calendar_today_rounded, color: myPrimaryColor, size: 18), 
+        const SizedBox(width: 12), 
+        Text(
+          DateFormat('MMMM d, yyyy').format(_selectedDate), 
+          style: TextStyle(fontSize: 14, color: textColor, fontWeight: FontWeight.w500)
+        ),
+        const Spacer(),
+        const Icon(Icons.arrow_drop_down, color: Colors.grey, size: 20), // Dropdown icon tells user it's clickable
+      ]),
+    ),
+  );
 
-      final path = Path();
-      path.moveTo(0, size.height * 0.75);
-      path.cubicTo(size.width * 0.2, size.height * 0.5, size.width * 0.35, size.height * 0.85,
-          size.width * 0.5, size.height * 0.45);
-      path.cubicTo(size.width * 0.65, size.height * 0.05, size.width * 0.85, size.height * 0.65, size.width,
-          size.height * 0.25);
-      canvas.drawPath(path, shadowPaint);
+  Widget _buildTimeToggle(bool isDark) => Container(
+    padding: const EdgeInsets.all(4), decoration: BoxDecoration(color: isDark ? Colors.white10 : Colors.grey[200], borderRadius: BorderRadius.circular(16)),
+    child: Row(children: ['Daily', 'Weekly', 'Monthly'].map((tab) {
+      bool isSelected = _selectedTab == tab;
+      return Expanded(child: GestureDetector(onTap: () => setState(() => _selectedTab = tab), child: Container(padding: const EdgeInsets.symmetric(vertical: 10), decoration: BoxDecoration(color: isSelected ? myPrimaryColor : Colors.transparent, borderRadius: BorderRadius.circular(12)), child: Center(child: Text(tab, style: TextStyle(color: isSelected ? Colors.white : Colors.grey, fontWeight: FontWeight.bold))))));
+    }).toList()),
+  );
 
-      final fillPaint = Paint()
-        ..shader = LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [AppTheme.primaryTeal.withOpacity(0.2), AppTheme.primaryTeal.withOpacity(0.0)],
-        ).createShader(Rect.fromLTWH(0, 0, size.width, size.height));
+  Widget _buildLockedView(Color cardColor, bool isDark) => Container(
+    width: double.infinity, padding: const EdgeInsets.all(40), decoration: BoxDecoration(color: cardColor, borderRadius: BorderRadius.circular(30)),
+    child: Column(children: [Icon(Icons.lock_clock_rounded, size: 60, color: myPrimaryColor.withOpacity(0.5)), const SizedBox(height: 20), Text("Module Locked", style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: isDark?Colors.white:Colors.black87)), const SizedBox(height: 10), Text(_getLockMessage(), textAlign: TextAlign.center, style: const TextStyle(fontSize: 14, color: Colors.grey))]),
+  ).animate().scale();
 
-      final areaPath = Path.from(path);
-      areaPath.lineTo(size.width, size.height);
-      areaPath.lineTo(0, size.height);
-      areaPath.close();
-      canvas.drawPath(areaPath, fillPaint);
+  Widget _buildStatsRow(String time, String sessions, Color cardColor, bool isDark) => Row(children: [
+    _statCard(Icons.access_time_filled_rounded, time, "Focus Time", myPrimaryColor, cardColor, isDark),
+    const SizedBox(width: 16),
+    _statCard(Icons.local_fire_department_rounded, sessions, "Sessions", Colors.orangeAccent, cardColor, isDark),
+  ]);
 
-      final linePaint = Paint()
-        ..color = AppTheme.primaryTeal
-        ..strokeWidth = 3
-        ..style = PaintingStyle.stroke
-        ..strokeCap = StrokeCap.round;
-      canvas.drawPath(path, linePaint);
-      return;
-    }
+  Widget _statCard(IconData icon, String val, String label, Color color, Color cardColor, bool isDark) => Expanded(child: Container(
+    padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: cardColor, borderRadius: BorderRadius.circular(24), border: Border.all(color: isDark ? Colors.white10 : Colors.grey.withOpacity(0.1))),
+    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Icon(icon, color: color, size: 24), const SizedBox(height: 12), Text(val, style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: isDark?Colors.white:Colors.black87)), Text(label, style: const TextStyle(fontSize: 12, color: Colors.grey))]),
+  ));
 
-    final values = data!;
-    final maxVal = values.length > 1 ? values.reduce((a, b) => a > b ? a : b) : values.first;
-    final paddingTop = size.height * 0.12;
-    final paddingBottom = size.height * 0.08;
-    final usableHeight = size.height - paddingTop - paddingBottom;
+  Widget _buildEmotionBreakdown(double happy, double stress, double sad, Color cardColor, bool isDark) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+    Text("Mood Distribution", style: headingStyle(isDark)), const SizedBox(height: 16),
+    Container(padding: const EdgeInsets.all(20), decoration: BoxDecoration(color: cardColor, borderRadius: BorderRadius.circular(24)), child: Column(children: [_buildEmotionBar("Happiness", happy, Colors.teal, isDark), const SizedBox(height: 16), _buildEmotionBar("Stress Level", stress, Colors.orangeAccent, isDark), const SizedBox(height: 16), _buildEmotionBar("Sadness", sad, Colors.blueAccent, isDark)]))
+  ]);
 
-    // build points
-    final points = <Offset>[];
-    if (values.length == 1) {
-      // Single data point: center it horizontally
-      final normalized = maxVal > 0 ? (values[0] / maxVal) : 0.0;
-      final y = paddingTop + (1 - normalized) * usableHeight;
-      points.add(Offset(size.width * 0.5, y));
-    } else {
-      for (var i = 0; i < values.length; i++) {
-        final x = (i / (values.length - 1)) * size.width;
-        final normalized = maxVal > 0 ? (values[i] / maxVal) : 0.0;
-        final y = paddingTop + (1 - normalized) * usableHeight;
-        points.add(Offset(x, y));
+  Widget _buildEmotionBar(String label, double val, Color color, bool isDark) => Column(children: [
+    Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text(label, style: TextStyle(fontSize: 13, color: isDark?Colors.white70:Colors.black54)), Text("${(val*100).toInt()}%", style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold))]),
+    const SizedBox(height: 8), ClipRRect(borderRadius: BorderRadius.circular(10), child: LinearProgressIndicator(value: val, backgroundColor: color.withOpacity(0.1), color: color, minHeight: 10))
+  ]);
+
+ Widget _buildMoodTrendSection(List<BarChartGroupData> barGroups, Color cardColor, bool isDark) {
+    // Check if there is any data to show
+    bool hasData = barGroups.any((group) => group.barRods.any((rod) => rod.toY > 0));
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start, 
+      children: [
+        Text(
+          _selectedTab == 'Monthly' ? "Monthly Session Analytics" : "Activity Tracker", 
+          style: headingStyle(isDark)
+        ), 
+        const SizedBox(height: 4),
+        const Text(
+          "Total mindfulness sessions per day", 
+          style: TextStyle(fontSize: 11, color: Colors.grey)
+        ),
+        const SizedBox(height: 20),
+        Container(
+          height: 220, 
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 15),
+          decoration: BoxDecoration(
+            color: cardColor, 
+            borderRadius: BorderRadius.circular(24),
+            // Light border for premium feel
+            border: Border.all(color: isDark ? Colors.white10 : Colors.black.withOpacity(0.05)),
+          ),
+          child: !hasData 
+            ? Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.bar_chart_rounded, color: Colors.grey.withOpacity(0.3), size: 40),
+                    const SizedBox(height: 8),
+                    Text(
+                      "No sessions recorded yet", 
+                      style: TextStyle(color: Colors.grey[500], fontSize: 12)
+                    ),
+                  ],
+                ),
+              )
+            : BarChart(
+                BarChartData(
+                  gridData: FlGridData(
+                    show: true, 
+                    drawVerticalLine: false, 
+                    getDrawingHorizontalLine: (v) => FlLine(color: isDark ? Colors.white10 : Colors.black12, strokeWidth: 1)
+                  ),
+                  titlesData: FlTitlesData(
+                    topTitles: const AxisTitles(),
+                    rightTitles: const AxisTitles(),
+                    leftTitles: AxisTitles(
+                      sideTitles: SideTitles(
+                        showTitles: true, 
+                        reservedSize: 30, 
+                        getTitlesWidget: (v, m) => Text(v.toInt().toString(), style: const TextStyle(color: Colors.grey, fontSize: 10))
+                      )
+                    ),
+                  bottomTitles: AxisTitles(
+  sideTitles: SideTitles(
+    showTitles: true,
+    getTitlesWidget: (double value, TitleMeta meta) {
+      // 1. Daily Tab: S1, S2, S3... dikhane ke liye
+      if (_selectedTab == 'Daily') {
+        return Padding(
+          padding: const EdgeInsets.only(top: 10),
+          child: Text("S${value.toInt() + 1}", 
+            style: const TextStyle(color: Colors.grey, fontSize: 10)),
+        );
+      } 
+      
+      // 2. Weekly Tab: Mon, Tue... dikhane ke liye
+      else if (_selectedTab == 'Weekly') {
+        const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+        if (value.toInt() >= 0 && value.toInt() < 7) {
+          return Padding(
+            padding: const EdgeInsets.only(top: 10),
+            child: Text(days[value.toInt()], 
+              style: const TextStyle(color: Colors.grey, fontSize: 10, fontWeight: FontWeight.bold)),
+          );
+        }
+      } 
+      
+      // 3. Monthly Tab: Sirf dates dikhane ke liye (1st, 10th, 20th etc.) taake messy na ho
+      else if (_selectedTab == 'Monthly') {
+        if (value.toInt() % 5 == 0) { // Har 5 din baad label dikhao
+          return Padding(
+            padding: const EdgeInsets.only(top: 10),
+            child: Text("${value.toInt() + 1}", 
+              style: const TextStyle(color: Colors.grey, fontSize: 10)),
+          );
+        }
       }
+      
+      return const Text("");
     }
+  )
+),
+                  ),
+                  borderData: FlBorderData(show: false),
+                  barGroups: barGroups,
+                  // Smooth animation when data changes
+                  barTouchData: BarTouchData(enabled: true),
+                ),
+              ),
+        ),
+      ]
+    );
+  }
 
-    // create smooth path
-    final path = Path();
-    if (points.length == 1) {
-      path.addOval(Rect.fromCircle(center: points.first, radius: 0.1));
-    } else {
-      path.moveTo(points.first.dx, points.first.dy);
-      for (int i = 1; i < points.length; i++) {
-        final prev = points[i - 1];
-        final curr = points[i];
-        final mid = Offset((prev.dx + curr.dx) / 2, (prev.dy + curr.dy) / 2);
-        path.quadraticBezierTo(prev.dx, prev.dy, mid.dx, mid.dy);
+  // --- OVERFLOW FIXED AI INSIGHTS CARD ---
+  Widget _buildAIInsightsCard(Map<String, dynamic> data, bool isDark) => Container(
+    width: double.infinity, 
+    padding: const EdgeInsets.all(20), 
+    decoration: BoxDecoration(
+      gradient: LinearGradient(colors: [myPrimaryColor.withOpacity(0.2), myPrimaryColor.withOpacity(0.05)]), 
+      borderRadius: BorderRadius.circular(24),
+      border: Border.all(color: myPrimaryColor.withOpacity(0.1)),
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start, 
+      children: [
+        Row(
+          children: [
+            const Icon(Icons.auto_awesome, color: Colors.orangeAccent, size: 18), 
+            const SizedBox(width: 8), 
+            const Expanded( // FIXED: Added Expanded to prevent overflow
+              child: Text("AI WELLNESS INSIGHT", 
+                style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: myPrimaryColor),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ), 
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4), 
+              decoration: BoxDecoration(color: myPrimaryColor.withOpacity(0.1), borderRadius: BorderRadius.circular(20)), 
+              child: Text("Status: ${data['last_mood_detected'] ?? "Analyzing"}", 
+                style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: myPrimaryColor)
+              )
+            )
+          ]
+        ),
+        const SizedBox(height: 12), 
+        Text(
+          data['latest_tip'] ?? "Engage in more conversations to unlock deeper insights.", 
+          style: TextStyle(fontSize: 15, color: isDark ? Colors.white : Colors.black87, height: 1.5)
+        )
+      ]
+    )
+  );
+
+  String _getDisplayTime(Map<String, dynamic> userData) { int s = userData['total_breathing_seconds'] ?? 0; return s < 60 ? "${s}s" : "${(s/60).toStringAsFixed(1)}m"; }
+
+ List<BarChartGroupData> _processHistoryToBars(List<QueryDocumentSnapshot> docs) {
+  DateTime now = DateTime.now();
+  DateTime todayStart = DateTime(now.year, now.month, now.day);
+  
+  // 1. Determine Range
+  int range = (_selectedTab == 'Monthly') ? 30 : 7;
+  if (_selectedTab == 'Daily') range = 5; // Daily mein hum bas 5 slots dikha dete hain (Session 1, 2, 3..)
+
+  Map<int, double> barValues = {for (var i = 0; i < range; i++) i: 0};
+
+  // 2. Filter Data
+  int dailySessionIndex = 0;
+  for (var doc in docs) {
+    if (doc['timestamp'] == null) continue;
+    DateTime d = (doc['timestamp'] as Timestamp).toDate();
+
+    if (_selectedTab == 'Daily') {
+      // Logic: Agar message aaj ka hai, toh usay slots mein barabar daal do
+      if (d.isAfter(todayStart) && dailySessionIndex < range) {
+        barValues[dailySessionIndex] = (barValues[dailySessionIndex] ?? 0) + 1;
+        dailySessionIndex++;
       }
-      path.lineTo(points.last.dx, points.last.dy);
-    }
-
-    // area fill
-    final areaPath = Path.from(path);
-    areaPath.lineTo(size.width, size.height);
-    areaPath.lineTo(0, size.height);
-    areaPath.close();
-    final fillPaint = Paint()
-      ..shader = LinearGradient(
-        begin: Alignment.topCenter,
-        end: Alignment.bottomCenter,
-        colors: [AppTheme.primaryTeal.withOpacity(0.22), AppTheme.primaryTeal.withOpacity(0.0)],
-      ).createShader(Rect.fromLTWH(0, 0, size.width, size.height));
-    canvas.drawPath(areaPath, fillPaint);
-
-    // line
-    final linePaint = Paint()
-      ..color = AppTheme.primaryTeal
-      ..strokeWidth = 2.6
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.round;
-    canvas.drawPath(path, linePaint);
-
-    // glowing points
-    final glowPaint = Paint()
-      ..color = AppTheme.primaryTeal
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8);
-    final dotPaint = Paint()..color = Colors.white;
-    for (int i = 0; i < points.length; i++) {
-      final isSelected = (selectedPoint != null && selectedPoint == i);
-      final p = points[i];
-      canvas.drawCircle(p, isSelected ? 10 : 6, glowPaint);
-      canvas.drawCircle(p, isSelected ? 5.5 : 3.5, Paint()..color = AppTheme.primaryTeal);
-      canvas.drawCircle(p, isSelected ? 3.5 : 1.8, dotPaint);
+    } else {
+      // Weekly/Monthly: Purani logic (Days diff)
+      int diff = todayStart.difference(DateTime(d.year, d.month, d.day)).inDays;
+      if (diff >= 0 && diff < range) {
+        int idx = (range - 1) - diff;
+        barValues[idx] = (barValues[idx] ?? 0) + 1;
+      }
     }
   }
 
-  @override
-  bool shouldRepaint(covariant _SophisticatedAreaChartPainter oldDelegate) =>
-      oldDelegate.selectedPoint != selectedPoint || !listEquals(oldDelegate.data, data);
+  // 3. Create Bars
+  return barValues.entries.map((e) => BarChartGroupData(
+    x: e.key,
+    barRods: [
+      BarChartRodData(
+        toY: e.value,
+        color: myPrimaryColor,
+        width: _selectedTab == 'Monthly' ? 6 : 14,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(6)),
+        backDrawRodData: BackgroundBarChartRodData(
+          show: true, 
+          toY: 5, 
+          color: myPrimaryColor.withOpacity(0.05)
+        ),
+      )
+    ],
+  )).toList();
+}
+
+  Widget _buildGlobalShimmer() => Shimmer.fromColors(baseColor: Colors.grey[300]!, highlightColor: Colors.grey[100]!, child: const Padding(padding: EdgeInsets.all(20), child: Column(children: [SizedBox(height: 40), SizedBox(height: 100)])));
 }

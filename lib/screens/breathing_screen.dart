@@ -1,398 +1,395 @@
+import 'package:flutter/material.dart';
+import 'package:google_fonts/google_fonts.dart';
+import 'dart:async';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:provider/provider.dart';
+import 'theme_provider.dart';
 
-  import 'package:flutter/material.dart';
-  import 'package:google_fonts/google_fonts.dart';
-  import '../theme/app_theme.dart';
-  import 'package:flutter/services.dart';
-  import 'dart:async';
-  import 'package:shared_preferences/shared_preferences.dart';
+class BreathingScreen extends StatefulWidget {
+  final int sessionSeconds;
+  const BreathingScreen({super.key, this.sessionSeconds = 300});
 
-  class BreathingScreen extends StatefulWidget {
-    const BreathingScreen({super.key});
+  @override
+  State<BreathingScreen> createState() => _BreathingScreenState();
+}
 
-    @override
-    State<BreathingScreen> createState() => _BreathingScreenState();
+enum BoxBreathingPhase { inhale, holdAfterInhale, exhale, holdAfterExhale }
+
+class _BreathingScreenState extends State<BreathingScreen>
+    with TickerProviderStateMixin {
+  late AnimationController _controller;
+  late AnimationController _holdController;
+  late Animation<double> _pulseAnimation;
+  late Animation<double> _glowAnimation;
+
+  BoxBreathingPhase _phase = BoxBreathingPhase.inhale;
+  late int _secondsRemaining;
+  int _secondsPracticed = 0;
+  Timer? _sessionTimer;
+  Timer? _phaseTimer;
+  bool _isPaused = true;
+  bool _timeSelected = false;
+
+  static const Color myPrimaryColor = Color(0xFF26C6DA);
+
+  @override
+  void initState() {
+    super.initState();
+    _secondsRemaining = widget.sessionSeconds;
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 4),
+    );
+    _holdController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1000),
+    );
+
+    _pulseAnimation = Tween<double>(
+      begin: 1.0,
+      end: 1.4,
+    ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeInOut));
+    _glowAnimation = Tween<double>(
+      begin: 0.1,
+      end: 0.4,
+    ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeInOut));
+
+    _controller.addStatusListener(_handleStatus);
   }
 
-  enum BoxBreathingPhase { inhale, holdAfterInhale, exhale, holdAfterExhale }
+  void _startSession(int seconds) {
+    setState(() {
+      _secondsRemaining = seconds;
+      _secondsPracticed = 0; 
+      _timeSelected = true;
+      _isPaused = true; 
+    });
+  }
 
-  class _BreathingScreenState extends State<BreathingScreen> with TickerProviderStateMixin {
-    late AnimationController _controller;
-    late AnimationController _holdController;
-    late Animation<double> _pulseAnimation;
-    late Animation<double> _glowAnimation;
-    late Animation<double> _progressAnimation;
-    late Animation<double> _holdPulse;
-    late Animation<double> _holdGlow;
-  
-    BoxBreathingPhase _phase = BoxBreathingPhase.inhale;
-    int _secondsRemaining = 300;
-    late final int _sessionInitial;
-    Timer? _sessionTimer;
-    Timer? _phaseTimer;
-
-    @override
-    void initState() {
-      super.initState();
-      _sessionInitial = _secondsRemaining;
-
-      _controller = AnimationController(vsync: this, duration: const Duration(seconds: 4));
-      _holdController = AnimationController(vsync: this, duration: const Duration(milliseconds: 800));
-
-      _progressAnimation = CurvedAnimation(parent: _controller, curve: Curves.easeInOut);
-      _pulseAnimation = Tween<double>(begin: 1.0, end: 1.4).animate(_progressAnimation);
-      _glowAnimation = Tween<double>(begin: 0.1, end: 0.3).animate(_progressAnimation);
-    
-      _holdPulse = Tween<double>(begin: 1.0, end: 1.06).animate(CurvedAnimation(parent: _holdController, curve: Curves.easeInOut));
-      _holdGlow = Tween<double>(begin: 0.02, end: 0.08).animate(CurvedAnimation(parent: _holdController, curve: Curves.easeInOut));
-
-      _controller.addStatusListener(_handleStatus);
-
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        _controller.forward();
+  void _togglePause() {
+    setState(() {
+      _isPaused = !_isPaused;
+      if (_isPaused) {
+        _stopAnimations();
+      } else {
         _startTimer();
-      });
-    }
+        if (_phase == BoxBreathingPhase.inhale) {
+          _controller.forward();
+        } else if (_phase == BoxBreathingPhase.exhale) {
+          _controller.reverse();
+        } else {
+          _runHoldPhase(_continueToNextPhase);
+        }
+      }
+    });
+  }
 
-    void _startTimer() {
-      _sessionTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-        if (!mounted) return;
+  void _stopAnimations() {
+    _controller.stop();
+    _holdController.stop();
+    _sessionTimer?.cancel();
+    _phaseTimer?.cancel();
+  }
+
+  void _handleStatus(AnimationStatus status) {
+    if (!mounted || _isPaused) return;
+    if (status == AnimationStatus.completed) {
+      setState(() => _phase = BoxBreathingPhase.holdAfterInhale);
+      _runHoldPhase(_continueToNextPhase);
+    } else if (status == AnimationStatus.dismissed) {
+      setState(() => _phase = BoxBreathingPhase.holdAfterExhale);
+      _runHoldPhase(_continueToNextPhase);
+    }
+  }
+
+  void _runHoldPhase(VoidCallback onComplete) {
+    _holdController.repeat(reverse: true);
+    _phaseTimer?.cancel();
+    _phaseTimer = Timer(const Duration(seconds: 4), () {
+      if (!mounted || _isPaused) return;
+      _holdController.stop();
+      onComplete();
+    });
+  }
+
+  void _continueToNextPhase() {
+    if (_phase == BoxBreathingPhase.holdAfterInhale) {
+      setState(() => _phase = BoxBreathingPhase.exhale);
+      _controller.reverse();
+    } else {
+      setState(() => _phase = BoxBreathingPhase.inhale);
+      _controller.forward();
+    }
+  }
+
+  void _startTimer() {
+    _sessionTimer?.cancel();
+    _sessionTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted || _isPaused) return;
+      setState(() {
         if (_secondsRemaining > 0) {
-          setState(() => _secondsRemaining--);
+          _secondsRemaining--;
+          _secondsPracticed++;
         } else {
           timer.cancel();
-          _saveAndExit();
+          _stopAnimations();
+          _showSummary();
         }
       });
-    }
+    });
+  }
 
-    Future<void> _saveAndExit() async {
-      final prefs = await SharedPreferences.getInstance();
-      final existing = prefs.getInt('breathing_total_seconds') ?? 0;
-      await prefs.setInt('breathing_total_seconds', existing + _sessionInitial);
-      if (mounted) Navigator.pop(context);
-    }
+  Future<void> _showSummary() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user != null) {
+      try {
+        await FirebaseFirestore.instance
+            .collection('users')
+            .doc(user.uid)
+            .collection('breathing_history')
+            .add({
+              'duration': _secondsPracticed,
+              'timestamp': FieldValue.serverTimestamp(),
+              'type': 'Box Breathing',
+            });
 
-    void _handleStatus(AnimationStatus status) {
-      if (!mounted) return;
-      if (status == AnimationStatus.completed) {
-        setState(() => _phase = BoxBreathingPhase.holdAfterInhale);
-        HapticFeedback.lightImpact();
-        _runHoldPhase(() {
-          if (!mounted) return;
-          setState(() => _phase = BoxBreathingPhase.exhale);
-          _controller.reverse();
-        });
-      } else if (status == AnimationStatus.dismissed) {
-        setState(() => _phase = BoxBreathingPhase.holdAfterExhale);
-        HapticFeedback.lightImpact();
-        _runHoldPhase(() {
-          if (!mounted) return;
-          setState(() => _phase = BoxBreathingPhase.inhale);
-          _controller.forward();
-        });
+        await FirebaseFirestore.instance
+            .collection('users')
+            .doc(user.uid)
+            .update({
+              'total_breathing_seconds': FieldValue.increment(
+                _secondsPracticed,
+              ),
+              'sessions_count': FieldValue.increment(1),
+            });
+      } catch (e) {
+        debugPrint("Error saving session: $e");
       }
     }
 
-    void _runHoldPhase(VoidCallback onComplete) {
-      _holdController.repeat(reverse: true);
-      _phaseTimer?.cancel();
-      _phaseTimer = Timer(const Duration(seconds: 4), () {
-        if (!mounted) return;
-        _holdController.stop();
-        _holdController.reset();
-        onComplete();
-      });
-    }
+    if (!mounted) return;
 
-    @override
-    void dispose() {
-      _sessionTimer?.cancel();
-      _phaseTimer?.cancel();
-      _controller.dispose();
-      _holdController.dispose();
-      super.dispose();
-    }
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        backgroundColor: Theme.of(context).cardColor,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text(
+          "Session Complete",
+          style: TextStyle(fontWeight: FontWeight.bold),
+        ),
+        content: Text(
+          "Great job! You practiced for ${_secondsPracticed ~/ 60}m ${(_secondsPracticed % 60)}s.",
+          style: const TextStyle(),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context); 
+              setState(() {
+                _timeSelected = false; 
+              });
+            },
+            child: const Text(
+              "FINISH",
+              style: TextStyle(
+                color: myPrimaryColor,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
-    String _formatTime(int seconds) {
-      int mins = seconds ~/ 60;
-      int secs = seconds % 60;
-      return '$mins:${secs.toString().padLeft(2, '0')}';
-    }
+  @override
+  void dispose() {
+    _sessionTimer?.cancel();
+    _phaseTimer?.cancel();
+    _controller.dispose();
+    _holdController.dispose();
+    super.dispose();
+  }
 
-    String _getInstruction() {
-      switch (_phase) {
-        case BoxBreathingPhase.inhale:
-          return 'Inhale';
-        case BoxBreathingPhase.holdAfterInhale:
-          return 'Hold';
-        case BoxBreathingPhase.exhale:
-          return 'Exhale';
-        case BoxBreathingPhase.holdAfterExhale:
-          return 'Hold';
-      }
-    }
+  @override
+  Widget build(BuildContext context) {
+    final themeProvider = context.watch<ThemeProvider>();
+    final isDark = themeProvider.isDarkMode;
+    final bgColor = isDark ? Colors.black : const Color(0xFFF8FBFF);
+    final textColor = isDark ? Colors.white : Colors.black87;
 
-    String _getGuidance() {
-      switch (_phase) {
-        case BoxBreathingPhase.inhale:
-          return 'Slowly fill your lungs with peaceful energy';
-        case BoxBreathingPhase.holdAfterInhale:
-          return 'Hold gently and feel the stillness';
-        case BoxBreathingPhase.exhale:
-          return 'Release all tension and let go of stress';
-        case BoxBreathingPhase.holdAfterExhale:
-          return 'Hold briefly and notice the calm';
-      }
-    }
-
-    @override
-    Widget build(BuildContext context) {
-      return Scaffold(
-        backgroundColor: AppTheme.background,
-        body: SafeArea(
-          child: Stack(
+    return Scaffold(
+      backgroundColor: bgColor,
+      body: SafeArea(
+        child: SingleChildScrollView(
+          child: Column(
             children: [
-              // Ambient Oscillating Glow
-              AnimatedBuilder(
-                animation: _glowAnimation,
-                builder: (context, child) {
-                  return Center(
-                    child: Container(
-                      width: 400,
-                      height: 400,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        gradient: RadialGradient(
-                          colors: [
-                            AppTheme.primaryTeal.withValues(alpha: _glowAnimation.value),
-                            AppTheme.primaryTeal.withValues(alpha: 0),
-                          ],
-                        ),
-                      ),
-                    ),
-                  );
-                },
-              ),
-
-              Column(
-                children: [
-                  // Professional Header (Matching Chat Screen)
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(20, 12, 12, 12),
-                    child: Row(
-                      children: [
-                         Container(
-                          width: 36,
-                          height: 36,
-                          decoration: BoxDecoration(
-                            gradient: AppTheme.primaryGradient,
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          child: const Icon(Icons.spa_rounded, color: Colors.white, size: 20),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                'Mindful Haven',
-                                style: GoogleFonts.outfit(
-                                  fontWeight: FontWeight.bold, 
-                                  fontSize: 16, 
-                                  color: AppTheme.textDark
-                                ),
-                              ),
-                              Text(
-                                'BREATHING GUIDE',
-                                style: GoogleFonts.outfit(
-                                  fontSize: 10, 
-                                  fontWeight: FontWeight.w800, 
-                                  color: AppTheme.textLight, 
-                                  letterSpacing: 0.5
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.close_rounded, size: 24, color: AppTheme.textLight),
-                          onPressed: () => Navigator.pop(context),
-                        ),
-                      ],
-                    ),
-                  ),
-                
-                  Expanded(
-                    child: SingleChildScrollView(
-                      physics: const BouncingScrollPhysics(),
-                      child: Column(
-                        children: [
-                          const SizedBox(height: 20),
-                          // Main Breathing Guide
-                          Stack(
-                            alignment: Alignment.center,
-                            children: [
-                              // Outer Pulsating Ring (uses base breathing pulse, plus a subtle hold micro-pulse)
-                              AnimatedBuilder(
-                                animation: Listenable.merge([_controller, _holdController]),
-                                builder: (context, child) {
-                                  final pulseVal = _pulseAnimation.value;
-                                  final holdFactor = (_phase == BoxBreathingPhase.holdAfterInhale || _phase == BoxBreathingPhase.holdAfterExhale)
-                                      ? _holdPulse.value
-                                      : 1.0;
-                                  final base = 240 * pulseVal;
-                                  final alphaAdd = (_phase == BoxBreathingPhase.holdAfterInhale || _phase == BoxBreathingPhase.holdAfterExhale)
-                                      ? _holdGlow.value
-                                      : 0.0;
-                                  return Container(
-                                    width: base * holdFactor,
-                                    height: base * holdFactor,
-                                    decoration: BoxDecoration(
-                                      shape: BoxShape.circle,
-                                      border: Border.all(
-                                        color: AppTheme.primaryTeal.withValues(alpha: 0.08 + alphaAdd),
-                                        width: 1.5,
-                                      ),
-                                    ),
-                                  );
-                                },
-                              ),
-                              // Second Layer Pulse (also respects hold micro-pulse)
-                              AnimatedBuilder(
-                                animation: Listenable.merge([_controller, _holdController]),
-                                builder: (context, child) {
-                                  final pulseVal = _pulseAnimation.value;
-                                  final base = 180 * (0.9 + 0.1 * pulseVal);
-                                  final holdFactor = (_phase == BoxBreathingPhase.holdAfterInhale || _phase == BoxBreathingPhase.holdAfterExhale)
-                                      ? _holdPulse.value
-                                      : 1.0;
-                                  final glowAlpha = _glowAnimation.value + ((_phase == BoxBreathingPhase.holdAfterInhale || _phase == BoxBreathingPhase.holdAfterExhale) ? _holdGlow.value : 0);
-                                  return Container(
-                                    width: base * holdFactor,
-                                    height: base * holdFactor,
-                                    decoration: BoxDecoration(
-                                      color: AppTheme.primaryTeal.withValues(alpha: 0.04 + (glowAlpha * 0.12)),
-                                      shape: BoxShape.circle,
-                                    ),
-                                  );
-                                },
-                              ),
-                              // Inner Interactive Circle
-                              Container(
-                                width: 160,
-                                height: 160,
-                                decoration: BoxDecoration(
-                                  color: Colors.white,
-                                  shape: BoxShape.circle,
-                                  boxShadow: [
-                                    BoxShadow(
-                                      color: AppTheme.primaryTeal.withValues(alpha: 0.1),
-                                      blurRadius: 30,
-                                      offset: const Offset(0, 10),
-                                    ),
-                                  ],
-                                ),
-                                child: Center(
-                                  child: Column(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      Icon(Icons.spa_rounded, color: AppTheme.primaryTeal.withValues(alpha: 0.3), size: 32),
-                                      const SizedBox(height: 8),
-                                            Text(
-                                              _getInstruction().toUpperCase(),
-                                              style: GoogleFonts.outfit(
-                                                fontSize: 16,
-                                                fontWeight: FontWeight.w900,
-                                                letterSpacing: 1.5,
-                                                color: AppTheme.primaryTeal,
-                                              ),
-                                            ),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                              // Circular Progress Border (driven by eased progress)
-                              SizedBox(
-                                width: 180,
-                                height: 180,
-                                child: AnimatedBuilder(
-                                  animation: Listenable.merge([_controller, _holdController]),
-                                  builder: (context, child) {
-                                    return CircularProgressIndicator(
-                                      value: _progressAnimation.value,
-                                      strokeWidth: 3,
-                                      strokeCap: StrokeCap.round,
-                                      backgroundColor: Colors.transparent,
-                                      valueColor: const AlwaysStoppedAnimation<Color>(AppTheme.primaryTeal),
-                                    );
-                                  },
-                                ),
-                              ),
-                            ],
-                          ),
-
-                          const SizedBox(height: 20),
-
-                          // Dynamic Instruction (phase-aware)
-                          Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 40),
-                            child: Text(
-                              _getGuidance(),
-                              textAlign: TextAlign.center,
-                              style: GoogleFonts.outfit(
-                                color: AppTheme.textLight,
-                                fontSize: 12,
-                                height: 1.6,
-                                fontWeight: FontWeight.w500,
-                              ),
-                            ),
-                          ),
-                        
-                          const SizedBox(height: 20),
-
-                          // Session Timer Card
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
-                            decoration: BoxDecoration(
-                              color: Colors.white,
-                              borderRadius: BorderRadius.circular(24),
-                              border: Border.all(color: Colors.black.withValues(alpha: 0.04)),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: Colors.black.withValues(alpha: 0.02),
-                                  blurRadius: 15,
-                                  offset: const Offset(0, 5),
-                                ),
-                              ],
-                            ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const Icon(Icons.timer_rounded, size: 20, color: AppTheme.primaryTeal),
-                                const SizedBox(width: 12),
-                                Text(
-                                  _formatTime(_secondsRemaining),
-                                  style: GoogleFonts.outfit(
-                                    color: AppTheme.textDark,
-                                    fontWeight: FontWeight.w900,
-                                    fontSize: 16,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(height: 20),
-                        ],
-                      ),
-                    ),
-                  ),
-                ],
-              ),
+              _buildHeader(isDark, textColor),
+              if (!_timeSelected)
+                _buildTimeSelection(isDark, textColor)
+              else
+                _buildBreathingUI(isDark, textColor),
             ],
           ),
         ),
-      );
+      ),
+    );
+  }
+
+  // UPDATED HEADER: Logo removed, Cross removed, Back icon added with logic
+  Widget _buildHeader(bool isDark, Color textColor) {
+    return Padding(
+      padding: const EdgeInsets.all(20),
+      child: Row(
+        children: [
+          IconButton(
+            icon: const Icon(Icons.arrow_back_ios_new, color: Colors.black, size: 22),
+            onPressed: () {
+              // Navigating specifically to Chat Screen
+              Navigator.pushReplacementNamed(context, '/chat');
+            },
+          ),
+          const SizedBox(width: 8),
+         const Text(
+          "Breathe and Relax",
+           style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+          // Spacer will push everything to the left and leave the right side empty
+          const Spacer(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTimeSelection(bool isDark, Color textColor) {
+    return Column(
+      children: [
+        const SizedBox(height: 45),
+        Text(
+          "How long to practice?",
+          style: TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.w600,
+            color: textColor,
+          ),
+        ),
+        const SizedBox(height: 20),
+        _timeButton("1 Minute", 60, isDark),
+        _timeButton("2 Minutes", 120, isDark),
+        _timeButton("3 Minutes", 180, isDark),
+        _timeButton("4 Minutes", 240, isDark),
+        _timeButton("5 Minutes", 300, isDark),
+      ],
+    );
+  }
+
+  Widget _timeButton(String label, int seconds, bool isDark) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 8),
+      child: ElevatedButton(
+        style: ElevatedButton.styleFrom(
+          backgroundColor: isDark ? const Color(0xFF121212) : Colors.white,
+          foregroundColor: myPrimaryColor,
+          side: BorderSide(color: myPrimaryColor.withOpacity(0.5)),
+          minimumSize: const Size(double.infinity, 55),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(15),
+          ),
+          elevation: isDark ? 0 : 2,
+        ),
+        onPressed: () => _startSession(seconds),
+        child: Text(
+          label,
+          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBreathingUI(bool isDark, Color textColor) {
+    return Column(
+      children: [
+        const SizedBox(height: 40),
+        GestureDetector(
+          onTap: _togglePause,
+          child: Center(
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                AnimatedBuilder(
+                  animation: _controller,
+                  builder: (context, child) => Container(
+                    width: 220 * _pulseAnimation.value,
+                    height: 220 * _pulseAnimation.value,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      boxShadow: [
+                        BoxShadow(
+                          color: myPrimaryColor.withOpacity(
+                            _glowAnimation.value,
+                          ),
+                          blurRadius: 40,
+                          spreadRadius: 10,
+                        ),
+                      ],
+                      border: Border.all(
+                        color: myPrimaryColor.withOpacity(0.2),
+                      ),
+                    ),
+                  ),
+                ),
+                SizedBox(
+                  width: 180,
+                  height: 180,
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        _isPaused
+                            ? Icons.play_arrow_rounded
+                            : Icons.air_rounded,
+                        color: myPrimaryColor,
+                        size: 40,
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        _isPaused ? "Start" : _getPhaseText(),
+                        style: TextStyle(
+                          color: myPrimaryColor,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 18,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 80),
+        Text(
+          '${_secondsRemaining ~/ 60}:${(_secondsRemaining % 60).toString().padLeft(2, '0')}',
+          style: TextStyle(
+            fontSize: 48,
+            fontWeight: FontWeight.bold,
+            color: myPrimaryColor,
+          ),
+        ),
+      ],
+    );
+  }
+
+  String _getPhaseText() {
+    switch (_phase) {
+      case BoxBreathingPhase.inhale:
+        return "INHALE";
+      case BoxBreathingPhase.exhale:
+        return "EXHALE";
+      default:
+        return "HOLD";
     }
   }
+}

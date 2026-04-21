@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
+import 'package:flutter/services.dart';
+import 'package:provider/provider.dart';
 import 'theme/app_theme.dart';
 import 'screens/splash_screen.dart';
 import 'screens/login_screen.dart';
+import 'screens/signup_screen.dart';
+import 'screens/forgot_password_screen.dart';
 import 'screens/chat_screen.dart';
 import 'screens/history_screen.dart';
 import 'screens/breathing_screen.dart';
@@ -10,52 +13,88 @@ import 'screens/insights_screen.dart';
 import 'screens/profile_screen.dart';
 import 'screens/emergency_support_screen.dart';
 import 'services/auth_service.dart';
+import 'widgets/background_wrapper.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'screens/theme_provider.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
+final AuthService authService = AuthService();
+void main() async {
+  // 1. Ensure initialization
+  WidgetsFlutterBinding.ensureInitialized();
+  
+  // 2. Load Environment Variables (.env file)
+  try {
+    await dotenv.load(fileName: ".env");
+    debugPrint("✅ .env file loaded successfully");
+  } catch (e) {
+    debugPrint("❌ Error loading .env file: $e");
+  }
 
-void main() {
-  runApp(const MindfulHavenApp());
+  // 3. Initialize Firebase
+  await Firebase.initializeApp();
+  
+  runApp(
+    MultiProvider(
+      providers: [ChangeNotifierProvider(create: (_) => ThemeProvider())],
+      child: const MindfulHavenApp(),
+    ),
+  );
 }
-
-// Global key to access the MainNavigation state
-final GlobalKey<MainNavigationState> navigationKey = GlobalKey<MainNavigationState>();
 
 class MindfulHavenApp extends StatelessWidget {
   const MindfulHavenApp({super.key});
 
   @override
   Widget build(BuildContext context) {
+    // Yahan themeProvider listen ho raha hai
+    final themeProvider = Provider.of<ThemeProvider>(context);
+
     return MaterialApp(
       title: 'Mindful Haven',
       debugShowCheckedModeBanner: false,
-      theme: AppTheme.light.copyWith(
-        textTheme: GoogleFonts.outfitTextTheme().copyWith(
-          headlineLarge: GoogleFonts.outfit(fontSize: 16, fontWeight: FontWeight.w600, color: AppTheme.textDark),
-          headlineMedium: GoogleFonts.outfit(fontSize: 16, fontWeight: FontWeight.w600, color: AppTheme.textDark),
-          headlineSmall: GoogleFonts.outfit(fontSize: 16, fontWeight: FontWeight.w600, color: AppTheme.textDark),
-          bodyMedium: GoogleFonts.outfit(fontSize: 12, fontWeight: FontWeight.w400, color: AppTheme.textDark),
-          bodySmall: GoogleFonts.outfit(fontSize: 11, fontWeight: FontWeight.w400, color: AppTheme.textDark),
+
+      // LIGHT THEME CONFIG
+      theme: ThemeData(
+        brightness: Brightness.light,
+        scaffoldBackgroundColor: Colors.white,
+        primaryColor: const Color(0xFF26C6DA),
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xFF26C6DA),
+          brightness: Brightness.light,
         ),
       ),
-      initialRoute: '/', // Starts at Splash Screen
+
+      // DARK THEME CONFIG
+      darkTheme: ThemeData(
+        brightness: Brightness.dark,
+        scaffoldBackgroundColor: const Color(
+          0xFF0F172A,
+        ), // Professional dark color
+        primaryColor: const Color(0xFF26C6DA),
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xFF26C6DA),
+          brightness: Brightness.dark,
+        ),
+      ),
+
+      // YE LINE SABSE IMPORTANT HAI:
+      // Agar themeProvider.isDarkMode true hai toh Dark Mode on ho jayega
+      themeMode: themeProvider.isDarkMode ? ThemeMode.dark : ThemeMode.light,
+
+      home: ListenableBuilder(
+        listenable: authService,
+        builder: (context, _) => authService.isLoggedIn
+            ? const MainNavigation()
+            : const SplashScreen(),
+      ),
       onGenerateRoute: (settings) {
-        final auth = AuthService();
-        
-        // Protection Logic: Restricted access to /home if not logged in
-        if (settings.name == '/home' && !auth.isLoggedIn) {
-          return MaterialPageRoute(builder: (context) => const LoginScreen());
-        }
-        
-        // Default Routes
         switch (settings.name) {
-          case '/':
-            return MaterialPageRoute(builder: (context) => const SplashScreen());
-          case '/login':
-            return MaterialPageRoute(builder: (context) => const LoginScreen());
           case '/home':
-            return MaterialPageRoute(builder: (context) => MainNavigation(key: navigationKey));
-          case '/emergency':
-            return MaterialPageRoute(builder: (context) => const EmergencySupportScreen());
+            return MaterialPageRoute(builder: (_) => const MainNavigation());
+          case '/login':
+            return MaterialPageRoute(builder: (_) => const LoginScreen());
           default:
-            return MaterialPageRoute(builder: (context) => const SplashScreen());
+            return MaterialPageRoute(builder: (_) => const SplashScreen());
         }
       },
     );
@@ -72,63 +111,52 @@ class MainNavigation extends StatefulWidget {
 class MainNavigationState extends State<MainNavigation> {
   int _selectedIndex = 0;
 
-  void setIndex(int index) {
-    setState(() {
-      _selectedIndex = index;
-    });
-  }
-
-  static final List<Widget> _widgetOptions = <Widget>[
-    const HistoryScreen(),
-    const ChatScreen(),
-    const BreathingScreen(),
-    const InsightsScreen(),
-    const ProfileScreen(),
-  ];
-
   @override
   Widget build(BuildContext context) {
+    // Theme provider ko check kar rahe hain background color set karne ke liye
+    final theme = Provider.of<ThemeProvider>(context);
+
     return Scaffold(
-      body: SafeArea(
-        child: IndexedStack(
-          index: _selectedIndex,
-          children: _widgetOptions,
-        ),
+      // Body ka background theme ke mutabiq change hoga
+      backgroundColor: theme.isDarkMode
+          ? const Color(0xFF0F172A)
+          : Colors.white,
+      body: IndexedStack(
+        index: _selectedIndex,
+        children: const [
+          HistoryScreen(),
+          ChatScreen(),
+          BreathingScreen(),
+          InsightsScreen(),
+          ProfileScreen(),
+        ],
       ),
       bottomNavigationBar: BottomNavigationBar(
         type: BottomNavigationBarType.fixed,
-        backgroundColor: Colors.white,
-        elevation: 10,
-        unselectedItemColor: AppTheme.textLight,
-        selectedItemColor: AppTheme.primaryTeal,
+        // Nav bar ka color bhi theme ke hisab se change hoga
+        backgroundColor: theme.isDarkMode ? Colors.black : Colors.white,
+        unselectedItemColor: theme.isDarkMode ? Colors.white60 : Colors.grey,
+        selectedItemColor: const Color(0xFF26C6DA),
         currentIndex: _selectedIndex,
-        onTap: setIndex,
-        items: const <BottomNavigationBarItem>[
+        onTap: (index) {
+          HapticFeedback.lightImpact();
+          setState(() => _selectedIndex = index);
+        },
+        items: const [
           BottomNavigationBarItem(
             icon: Icon(Icons.home_outlined),
-            activeIcon: Icon(Icons.home),
-            label: 'Home',
+            label: 'HOME',
           ),
           BottomNavigationBarItem(
-            icon: Icon(Icons.chat_bubble_outline),
-            activeIcon: Icon(Icons.chat_bubble),
-            label: 'Connect',
+            icon: Icon(Icons.connect_without_contact),
+            label: 'CONNECT',
           ),
+          BottomNavigationBarItem(icon: Icon(Icons.air), label: 'BREATHE'),
           BottomNavigationBarItem(
-            icon: Icon(Icons.self_improvement_outlined),
-            activeIcon: Icon(Icons.self_improvement),
-            label: 'Breathe',
+            icon: Icon(Icons.insights),
+            label: 'INSIGHTS',
           ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.insights_outlined),
-            activeIcon: Icon(Icons.insights),
-            label: 'Insights',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.person_outline),
-            activeIcon: Icon(Icons.person),
-            label: 'Profile',
-          ),
+          BottomNavigationBarItem(icon: Icon(Icons.person), label: 'PROFILE'),
         ],
       ),
     );

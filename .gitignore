@@ -4,24 +4,15 @@
 *.pyc
 *.swp
 .DS_Store
-.atom/
 .build/
-.buildlog/
 .history
-.svn/
-.swiftpm/
-migrate_working_dir/
 
-# IntelliJ related
+# IntelliJ/VS Code related
 *.iml
 *.ipr
 *.iws
 .idea/
-
-# The .vscode folder contains launch configuration and tasks you configure in
-# VS Code which you may wish to be included in version control, so this line
-# is commented out by default.
-#.vscode/
+.vscode/
 
 # Flutter/Dart/Pub related
 **/doc/api/
@@ -33,13 +24,18 @@ migrate_working_dir/
 /build/
 /coverage/
 
-# Symbolication related
-app.*.symbols
+# Firebase & Secrets (SECURITY!)
+google-services.json
+GoogleService-Info.plist
+# Ye aapki specific secret file hai jo git status mein aa rahi thi
+lib/assets/mindfuldb04-b3e2b2c22d2b.json
+.env
 
-# Obfuscation related
+# Symbolication & Obfuscation
+app.*.symbols
 app.*.map.json
 
-# Android Studio will place build artifacts here
+# Android/iOS builds
 /android/app/debug
 /android/app/profile
 /android/app/release

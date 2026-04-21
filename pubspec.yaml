@@ -29,20 +29,36 @@ environment:
 # versions available, run `flutter pub outdated`.
 dependencies:
   flutter:
-    sdk: flutter
+    sdk: flutter 
+   
 
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
+  flutter_dotenv: ^5.1.0
   cupertino_icons: ^1.0.8
   google_fonts: ^8.0.2
-  google_generative_ai: ^0.4.7
-  url_launcher: ^6.2.5
+  firebase_core: ^3.8.0
+  firebase_auth: ^5.3.3
+  cloud_firestore: ^5.6.12
+  # google_generative_ai: ^0.4.7
+  url_launcher: ^6.3.2
   geolocator: ^11.0.0
-  shared_preferences: ^2.2.2
+  shared_preferences: ^2.5.4
   shimmer: ^3.0.0
   image_picker: ^1.0.7
-  intl: ^0.18.1
   flutter_animate: ^4.5.2
+  flutter_svg: ^2.0.10+1
+  font_awesome_flutter: ^11.0.0
+  fl_chart: ^1.1.1
+  google_generative_ai: ^0.4.0
+  intl: ^0.19.0
+  provider: ^6.0.0
+  http: ^1.6.0
+  emoji_picker_flutter: ^4.4.0
+  encrypt: ^5.0.3
+  telephony: ^0.2.0
+  flutter_native_splash: ^2.4.7
+  
 
 dev_dependencies:
   flutter_test:
@@ -53,8 +69,32 @@ dev_dependencies:
   # activated in the `analysis_options.yaml` file located at the root of your
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
-  flutter_lints: ^6.0.0
+  flutter_lints: ^2.0.0
+  # --- LAUNCHER ICON PACKAGE ADDED HERE ---
+  flutter_launcher_icons: ^0.13.1
 
+# --- ICON CONFIGURATION SECTION ---
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "assets/images/app_logo.png"
+  
+  # Adaptive icons (Android 8.0+) ke liye ye do lines zaroori hain
+  adaptive_icon_background: "#FFFFFF" 
+  adaptive_icon_foreground: "assets/images/app_logo.png"
+
+
+# --- LAUNCHER ICON waale section ke niche ye paste karein ---
+flutter_native_splash:
+  color: "#FFFFFF"
+  image: "assets/images/app_logo.png"
+  
+  android_12:
+    image: "assets/images/app_logo.png"
+    icon_background_color: "#FFFFFF"
+    
+  # Ye line wide logo ko center mein constrain karegi
+  android_gravity: center
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
 
@@ -67,9 +107,12 @@ flutter:
   uses-material-design: true
 
   # To add assets to your application, add an assets section, like this:
-  # assets:
-  #   - images/a_dot_burr.jpeg
-  #   - images/a_dot_ham.jpeg
+  assets:
+    - .env
+    - assets/images/app_logo.png
+    - assets/images/logo_app2.png
+  #   # - images/a_dot_ham.jpeg
+    
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images
