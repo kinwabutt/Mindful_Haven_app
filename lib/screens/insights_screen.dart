@@ -39,6 +39,10 @@ class _InsightsScreenState extends State<InsightsScreen> {
   bool _isUpdating = false;
 
   static const Color myPrimaryColor = Color(0xFF26C6DA);
+  @override
+void initState() {
+  super.initState();
+}
   // Purani line ko delete karke ye likhein
 final String predictUrl = dotenv.env['BERT_PREDICT_URL'] ?? "";
 
@@ -69,71 +73,37 @@ final String predictUrl = dotenv.env['BERT_PREDICT_URL'] ?? "";
     return "";
   }
 
-  Future<void> _refreshAIAnalysis() async {
-    if (_user == null || _isUpdating) return;
-    setState(() => _isUpdating = true);
-    try {
-      final historySnap = await _firestore.collection('chats').doc(_user!.uid).collection('history').orderBy('timestamp', descending: true).limit(1).get();
-      if (historySnap.docs.isEmpty) {
-        if (mounted) setState(() => _isUpdating = false);
-        return;
-      }
-      String latestChatId = historySnap.docs.first.id;
-      final messagesSnap = await _firestore.collection('chats').doc(_user!.uid).collection('history').doc(latestChatId).collection('messages').orderBy('timestamp', descending: true).limit(5).get();
-      String chatText = messagesSnap.docs.map((m) => EncryptionHelper.decryptText(m['text'] ?? "")).join(" ");
-      final res = await http.post(Uri.parse(predictUrl), headers: {"Content-Type": "application/json"}, body: jsonEncode({"text": chatText}));
-      if (res.statusCode == 200) {
-        String moodLabel = jsonDecode(res.body)['emotion'] ?? "Neutral";
-        String moodKey = moodLabel.toLowerCase().trim();
-        String randomTip = (moodTips[moodKey] ?? moodTips['neutral']!).first;
-        await _firestore.collection('users').doc(_user!.uid).update({
-          'latest_tip': randomTip,
-          'last_mood_detected': moodLabel,
-          'last_mood_update': FieldValue.serverTimestamp(),
-        });
-      }
-    } catch (e) { debugPrint(e.toString()); } finally { if (mounted) setState(() => _isUpdating = false); }
-  }
+ Future<void> _refreshAIAnalysis() async {
+  if (_user == null) return;
+  // setState wali line delete kar di taake screen jhatka na mare
+  
+  try {
+    final historySnap = await _firestore.collection('chats').doc(_user!.uid).collection('history').orderBy('timestamp', descending: true).limit(1).get();
+    if (historySnap.docs.isEmpty) return;
 
- Future<Map<String, double>> _calculateSmartScores() async {
-    if (_user == null) return {'happy': 0.0, 'stress': 0.0, 'sad': 0.0};
+    String latestChatId = historySnap.docs.first.id;
+    final messagesSnap = await _firestore.collection('chats').doc(_user!.uid).collection('history').doc(latestChatId).collection('messages').orderBy('timestamp', descending: true).limit(5).get();
     
-    DateTime now = DateTime.now();
-    DateTime startTime;
-
-    // Daily logic: Aaj raat 12:00 AM se ab tak ka data
-    if (_selectedTab == 'Daily') {
-      startTime = DateTime(now.year, now.month, now.day);
-    } 
-    // Weekly logic: Pichle 7 din
-    else if (_selectedTab == 'Weekly') {
-      startTime = now.subtract(const Duration(days: 7));
-    } 
-    // Monthly logic: Pichle 30 din
-    else {
-      startTime = now.subtract(const Duration(days: 30));
+    String chatText = messagesSnap.docs.map((m) => EncryptionHelper.decryptText(m['text'] ?? "")).join(" ");
+    final res = await http.post(Uri.parse(predictUrl), headers: {"Content-Type": "application/json"}, body: jsonEncode({"text": chatText}));
+    
+    if (res.statusCode == 200) {
+      String moodLabel = jsonDecode(res.body)['emotion'] ?? "Neutral";
+      String moodKey = moodLabel.toLowerCase().trim();
+      String randomTip = (moodTips[moodKey] ?? moodTips['neutral']!).first;
+      
+      // Sirf database update karein, UI khud hi StreamBuilder se update ho jayegi
+      await _firestore.collection('users').doc(_user!.uid).update({
+        'latest_tip': randomTip,
+        'last_mood_detected': moodLabel,
+        'last_mood_update': FieldValue.serverTimestamp(),
+      });
     }
-
-    var snapshot = await _firestore
-        .collection('users')
-        .doc(_user!.uid)
-        .collection('mood_history')
-        .where('timestamp', isGreaterThanOrEqualTo: startTime)
-        .get();
-
-    double happy = 0, sad = 0, stress = 0;
-    for (var doc in snapshot.docs) {
-      String m = doc['mood']?.toString().toLowerCase() ?? "";
-      if (['joy', 'happy', 'surprise'].contains(m)) happy++;
-      else if (['sadness', 'sad'].contains(m)) sad++;
-      else stress++;
-    }
-
-    double total = happy + sad + stress;
-    if (total == 0) return {'happy': 0.0, 'stress': 0.0, 'sad': 0.0};
-    return {'happy': happy / total, 'stress': stress / total, 'sad': sad / total};
+  } catch (e) { 
+    debugPrint("AI Refresh Error: $e"); 
   }
-
+  // No more _isUpdating = false logic needed here
+}
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
@@ -150,41 +120,98 @@ final String predictUrl = dotenv.env['BERT_PREDICT_URL'] ?? "";
             final userData = userSnapshot.data?.data() as Map<String, dynamic>? ?? {};
             bool isLocked = _isTabLocked(userData);
 
-            return RefreshIndicator(
-              onRefresh: _refreshAIAnalysis,
-              child: SingleChildScrollView(
-                physics: const AlwaysScrollableScrollPhysics(),
-                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _buildTopHeader(textColor),
-                    const SizedBox(height: 20),
-                    _buildCalendarStrip(cardColor, textColor),
-                    const SizedBox(height: 20),
-                    _buildTimeToggle(isDark),
-                    const SizedBox(height: 25),
-                    if (isLocked) 
-                      _buildLockedView(cardColor, isDark) 
-                    else ...[
-                      _buildStatsRow(_getDisplayTime(userData), (userData['sessions_count'] ?? 0).toString(), cardColor, isDark),
+           return SingleChildScrollView(
+  physics: const AlwaysScrollableScrollPhysics(),
+  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+  child: Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      _buildTopHeader(textColor),
+      const SizedBox(height: 20),
+      _buildCalendarStrip(cardColor, textColor),
+      const SizedBox(height: 20),
+      _buildTimeToggle(isDark),
+      const SizedBox(height: 25),
+                   // ... (Upar ka code same rahega)
+
+// BUILD METHOD KA MAIN HISSA
+if (isLocked) 
+  _buildLockedView(cardColor, isDark) 
+else ...[
+  // --- SECTION 1: STATS CARDS (FOCUS TIME & SESSIONS) ---
+  StreamBuilder<QuerySnapshot>(
+    stream: _firestore.collection('users').doc(_user!.uid).collection('breathing_history').snapshots(),
+    builder: (context, sessionSnap) {
+      DateTime now = DateTime.now();
+      DateTime startTime = _selectedTab == 'Daily' 
+          ? DateTime(now.year, now.month, now.day) 
+          : (_selectedTab == 'Weekly' ? now.subtract(const Duration(days: 7)) : now.subtract(const Duration(days: 30)));
+
+      int totalSessions = 0;
+      int totalSeconds = 0;
+
+      if (sessionSnap.hasData) {
+        final filteredDocs = sessionSnap.data!.docs.where((doc) {
+          Timestamp? t = doc['timestamp'] as Timestamp?;
+          return t != null && t.toDate().isAfter(startTime);
+        }).toList();
+
+        totalSessions = filteredDocs.length;
+        for (var doc in filteredDocs) {
+          totalSeconds += (doc.data() as Map<String, dynamic>)['duration'] as int? ?? 0; 
+        }
+      }
+
+      String displayTime = totalSeconds < 60 ? "${totalSeconds}s" : "${(totalSeconds / 60).toStringAsFixed(1)}m";
+      return _buildStatsRow(displayTime, totalSessions.toString(), cardColor, isDark);
+    }
+  ),
+
+  const SizedBox(height: 25),
+
+  // --- SECTION 2: MOOD BARS (EMOTION BREAKDOWN) ---
+  StreamBuilder<QuerySnapshot>(
+    stream: _firestore.collection('users').doc(_user!.uid).collection('mood_history').snapshots(),
+    builder: (context, moodSnap) {
+      if (moodSnap.connectionState == ConnectionState.waiting) return const SizedBox(height: 100, child: Center(child: CircularProgressIndicator()));
+
+      DateTime now = DateTime.now();
+      DateTime startTime = _selectedTab == 'Daily' 
+          ? DateTime(now.year, now.month, now.day) 
+          : (_selectedTab == 'Weekly' ? now.subtract(const Duration(days: 7)) : now.subtract(const Duration(days: 30)));
+
+      double happy = 0, sad = 0, stress = 0;
+      final docs = moodSnap.data?.docs.where((doc) {
+        Timestamp? t = doc['timestamp'] as Timestamp?;
+        return t != null && t.toDate().isAfter(startTime);
+      }).toList() ?? [];
+
+      for (var doc in docs) {
+        String m = doc['mood']?.toString().toLowerCase() ?? "";
+        if (['joy', 'happy', 'surprise'].contains(m)) happy++;
+        else if (['sadness', 'sad'].contains(m)) sad++;
+        else stress++;
+      }
+
+      double total = happy + sad + stress;
+      return _buildEmotionBreakdown(total == 0 ? 0 : happy / total, total == 0 ? 0 : stress / total, total == 0 ? 0 : sad / total, cardColor, isDark);
+    },
+  ),
+
+  const SizedBox(height: 25),
+
+  // --- SECTION 3: ACTIVITY TRACKER (BARS) ---
+  StreamBuilder<QuerySnapshot>(
+    // Optimization: Filter data in stream
+    stream: _firestore.collection('users').doc(_user!.uid).collection('breathing_history').orderBy('timestamp', descending: true).snapshots(),
+    builder: (context, bSnap) {
+      // Is function ke andar humne range logic check karni hai
+      return _buildMoodTrendSection(_processHistoryToBars(bSnap.data?.docs ?? []), cardColor, isDark);
+    }
+  ),
                       const SizedBox(height: 25),
-                      FutureBuilder<Map<String, double>>(
-                        future: _calculateSmartScores(),
-                        builder: (context, snap) {
-                          if (snap.connectionState == ConnectionState.waiting) return const SizedBox(height: 100, child: Center(child: CircularProgressIndicator()));
-                          final s = snap.data ?? {'happy': 0.0, 'stress': 0.0, 'sad': 0.0};
-                          return _buildEmotionBreakdown(s['happy']!, s['stress']!, s['sad']!, cardColor, isDark);
-                        }
-                      ),
-                      const SizedBox(height: 25),
-                      StreamBuilder<QuerySnapshot>(
-                        stream: _firestore.collection('users').doc(_user!.uid).collection('breathing_history').orderBy('timestamp', descending: true).snapshots(),
-                        builder: (context, bSnap) {
-                          return _buildMoodTrendSection(_processHistoryToBars(bSnap.data?.docs ?? []), cardColor, isDark);
-                        }
-                      ),
-                      const SizedBox(height: 25),
+
+                      // --- SECTION 4: AI WELLNESS CARD ---
                       _buildAIInsightsCard(userData, isDark),
                       const SizedBox(height: 16),
                       _buildSmartActionButton(userData['last_mood_detected'] ?? "Neutral"),
@@ -192,14 +219,12 @@ final String predictUrl = dotenv.env['BERT_PREDICT_URL'] ?? "";
                     const SizedBox(height: 40),
                   ],
                 ).animate().fadeIn(duration: 500.ms),
-              ),
-            );
+           );
           },
         ),
       ),
     );
   }
-
   Widget _buildSmartActionButton(String mood) {
     String label = "Start Quick Session";
     IconData icon = Icons.play_arrow_rounded;
@@ -458,13 +483,20 @@ Widget _buildTopHeader(Color textColor) => Row(
                 overflow: TextOverflow.ellipsis,
               ),
             ), 
+           // --- YE WALA HISSA UPDATE HUA HAI ---
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4), 
-              decoration: BoxDecoration(color: myPrimaryColor.withOpacity(0.1), borderRadius: BorderRadius.circular(20)), 
-              child: Text("Status: ${data['last_mood_detected'] ?? "Analyzing"}", 
+              decoration: BoxDecoration(
+                color: myPrimaryColor.withOpacity(0.1), 
+                borderRadius: BorderRadius.circular(20)
+              ), 
+              child: Text(
+                "Status: ${data['last_mood_detected'] ?? "Neutral"}", // Direct DB data!
                 style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: myPrimaryColor)
               )
             )
+            // ------------------------------------
+            
           ]
         ),
         const SizedBox(height: 12), 
@@ -484,24 +516,37 @@ Widget _buildTopHeader(Color textColor) => Row(
   
   // 1. Determine Range
   int range = (_selectedTab == 'Monthly') ? 30 : 7;
-  if (_selectedTab == 'Daily') range = 5; // Daily mein hum bas 5 slots dikha dete hain (Session 1, 2, 3..)
+  if (_selectedTab == 'Daily') {
+    // FIX 1: Yahan Null Check lagana zaroori tha
+    int todayCount = docs.where((doc) {
+      // Pehle check karein ke data null toh nahi
+      var data = doc.data() as Map<String, dynamic>;
+      if (data['timestamp'] == null) return false; 
+      
+      DateTime d = (data['timestamp'] as Timestamp).toDate();
+      return d.isAfter(todayStart);
+    }).length;
+    
+    range = todayCount > 0 ? todayCount : 5; 
+  }
 
   Map<int, double> barValues = {for (var i = 0; i < range; i++) i: 0};
 
   // 2. Filter Data
   int dailySessionIndex = 0;
   for (var doc in docs) {
-    if (doc['timestamp'] == null) continue;
-    DateTime d = (doc['timestamp'] as Timestamp).toDate();
+    // FIX 2: Data ko safe tareeqay se access karein
+    var data = doc.data() as Map<String, dynamic>;
+    if (data['timestamp'] == null) continue;
+
+    DateTime d = (data['timestamp'] as Timestamp).toDate();
 
     if (_selectedTab == 'Daily') {
-      // Logic: Agar message aaj ka hai, toh usay slots mein barabar daal do
       if (d.isAfter(todayStart) && dailySessionIndex < range) {
         barValues[dailySessionIndex] = (barValues[dailySessionIndex] ?? 0) + 1;
         dailySessionIndex++;
       }
     } else {
-      // Weekly/Monthly: Purani logic (Days diff)
       int diff = todayStart.difference(DateTime(d.year, d.month, d.day)).inDays;
       if (diff >= 0 && diff < range) {
         int idx = (range - 1) - diff;

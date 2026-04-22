@@ -1,11 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import 'theme_provider.dart'; 
-// Make sure this import matches your breathing screen file path
 import 'breathing_screen.dart'; 
 
 class HistoryScreen extends StatefulWidget {
@@ -19,17 +17,44 @@ class _HistoryScreenState extends State<HistoryScreen> {
   final Color brandTeal = const Color(0xFF26C6DA);
   final User? _currentUser = FirebaseAuth.instance.currentUser;
 
+  // SENIOR FIX: Added confirmation dialog to prevent accidental data loss
   Future<void> _deleteHistoryItem(String docId) async {
-    try {
-      await FirebaseFirestore.instance
-          .collection('users')
-          .doc(_currentUser!.uid)
-          .collection('breathing_history')
-          .doc(docId)
-          .delete();
-    } catch (e) {
-      debugPrint("Error deleting record: $e");
+    bool confirm = await showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text("Delete Record?", style: TextStyle(fontWeight: FontWeight.bold)),
+        content: const Text("Are you sure you want to remove this session from your history?"),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text("Cancel")),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true), 
+            child: const Text("Delete", style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold))
+          ),
+        ],
+      ),
+    ) ?? false;
+
+    if (confirm) {
+      try {
+        await FirebaseFirestore.instance
+            .collection('users')
+            .doc(_currentUser!.uid)
+            .collection('breathing_history')
+            .doc(docId)
+            .delete();
+      } catch (e) {
+        debugPrint("Error deleting record: $e");
+      }
     }
+  }
+
+  // SENIOR FIX: Better duration formatting (e.g., 45s or 1m 20s instead of just 0m)
+  String _formatDuration(int totalSeconds) {
+    if (totalSeconds < 60) return "${totalSeconds}s";
+    int mins = totalSeconds ~/ 60;
+    int secs = totalSeconds % 60;
+    return secs == 0 ? "${mins}m" : "${mins}m ${secs}s";
   }
 
   @override
@@ -52,14 +77,10 @@ class _HistoryScreenState extends State<HistoryScreen> {
         backgroundColor: bgColor,
         elevation: 0,
         centerTitle: true,
-        automaticallyImplyLeading: false, // Back button remove kar diya
+        automaticallyImplyLeading: false, 
         title: Text(
           'History',
-          style: TextStyle(
-            fontSize: 16,
-            fontWeight: FontWeight.bold,
-            color: textColor,
-          ),
+          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: textColor),
         ),
       ),
       body: StreamBuilder<QuerySnapshot>(
@@ -92,9 +113,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                 decoration: BoxDecoration(
                   color: cardColor,
                   borderRadius: BorderRadius.circular(15),
-                  border: Border.all(
-                    color: isDark ? Colors.white10 : Colors.grey.shade200,
-                  ),
+                  border: Border.all(color: isDark ? Colors.white10 : Colors.grey.shade200),
                 ),
                 child: Row(
                   children: [
@@ -109,11 +128,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                         children: [
                           Text(
                             'Box Breathing',
-                            style: TextStyle(
-                              fontWeight: FontWeight.bold,
-                              color: textColor,
-                              fontSize: 16,
-                            ),
+                            style: TextStyle(fontWeight: FontWeight.bold, color: textColor, fontSize: 16),
                           ),
                           Text(
                             DateFormat('dd MMM, hh:mm a').format(date),
@@ -126,20 +141,13 @@ class _HistoryScreenState extends State<HistoryScreen> {
                       crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
                         Text(
-                          '${(data['duration'] ?? 0) ~/ 60}m',
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            color: brandTeal,
-                          ),
+                          _formatDuration(data['duration'] ?? 0),
+                          style: TextStyle(fontWeight: FontWeight.bold, color: brandTeal, fontSize: 14),
                         ),
                         IconButton(
                           constraints: const BoxConstraints(),
                           padding: EdgeInsets.zero,
-                          icon: const Icon(
-                            Icons.delete_sweep_outlined,
-                            color: Colors.redAccent,
-                            size: 20,
-                          ),
+                          icon: const Icon(Icons.delete_sweep_outlined, color: Colors.redAccent, size: 22),
                           onPressed: () => _deleteHistoryItem(doc.id),
                         ),
                       ],
@@ -171,22 +179,25 @@ class _HistoryScreenState extends State<HistoryScreen> {
                     width: 180,
                     height: 180,
                     decoration: BoxDecoration(
-                      color: brandTeal.withOpacity(isDark ? 0.1 : 0.2),
+                      color: brandTeal.withOpacity(isDark ? 0.05 : 0.1),
                       shape: BoxShape.circle,
                     ),
                   ),
-                  Positioned(top: 40, left: 50, child: Icon(Icons.eco_rounded, color: brandTeal.withOpacity(0.3), size: 35)),
-                  Positioned(top: 60, right: 40, child: Icon(Icons.favorite_rounded, color: brandTeal.withOpacity(0.3), size: 40)),
-                  // Error wala icon local_florist se replace kar diya jo professional lag raha hai
-                  Positioned(bottom: 50, left: 60, child: Icon(Icons.local_florist_rounded, color: brandTeal.withOpacity(0.3), size: 35)),
-                  Positioned(bottom: 60, right: 50, child: Icon(Icons.cloud_rounded, color: brandTeal.withOpacity(0.3), size: 30)),
+                  Positioned(top: 40, left: 50, child: Icon(Icons.eco_rounded, color: brandTeal.withOpacity(0.2), size: 35)),
+                  Positioned(top: 60, right: 40, child: Icon(Icons.favorite_rounded, color: brandTeal.withOpacity(0.2), size: 40)),
+                  Positioned(bottom: 50, left: 60, child: Icon(Icons.local_florist_rounded, color: brandTeal.withOpacity(0.2), size: 35)),
                   
+                  // SENIOR FIX: Adjusted bubble containers for Dark/Light mode consistency
                   Positioned(
                     top: 30,
                     right: 30,
                     child: Container(
                       padding: const EdgeInsets.all(10),
-                      decoration: const BoxDecoration(color: Colors.white, shape: BoxShape.circle, boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 10)]),
+                      decoration: BoxDecoration(
+                        color: isDark ? Colors.grey[900] : Colors.white, 
+                        shape: BoxShape.circle, 
+                        boxShadow: [BoxShadow(color: isDark ? Colors.black54 : Colors.black12, blurRadius: 10)]
+                      ),
                       child: Icon(Icons.chat_bubble_rounded, color: brandTeal, size: 24),
                     ),
                   ),
@@ -195,55 +206,33 @@ class _HistoryScreenState extends State<HistoryScreen> {
                     left: 20,
                     child: Container(
                       padding: const EdgeInsets.all(10),
-                      decoration: const BoxDecoration(color: Colors.white, shape: BoxShape.circle, boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 10)]),
+                      decoration: BoxDecoration(
+                        color: isDark ? Colors.grey[900] : Colors.white, 
+                        shape: BoxShape.circle, 
+                        boxShadow: [BoxShadow(color: isDark ? Colors.black54 : Colors.black12, blurRadius: 10)]
+                      ),
                       child: Icon(Icons.psychology_rounded, color: brandTeal, size: 24),
                     ),
                   ),
                 ],
               ),
             ),
-            
             const SizedBox(height: 30),
-            Text(
-              "No sessions yet",
-              style: TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.w800,
-                color: textColor,
-              ),
-            ),
+            Text("No sessions recorded", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: textColor)),
             const SizedBox(height: 8),
-            Text(
-              "Start your first breathing session",
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                fontSize: 13,
-                color: subTextColor,
-              ),
-            ),
+            Text("Complete a breathing exercise to see your history here.", textAlign: TextAlign.center, style: TextStyle(fontSize: 14, color: subTextColor)),
             const SizedBox(height: 40),
-            
             SizedBox(
               width: double.infinity,
               height: 55,
               child: ElevatedButton.icon(
-                onPressed: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (context) => const BreathingScreen()),
-                  );
-                },
-                icon: const Icon(Icons.add_comment_rounded, color: Colors.white, size: 20),
-                label: const Text(
-                  "Start Session",
-                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
-                ),
+                onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (context) => const BreathingScreen())),
+                icon: const Icon(Icons.play_arrow_rounded, color: Colors.white),
+                label: const Text("Start Session", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: brandTeal,
                   foregroundColor: Colors.white,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(25),
-                  ),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                   elevation: 0,
                 ),
               ),

@@ -1,26 +1,31 @@
 import 'dart:convert';
 import 'dart:async';
-import 'dart:math'; // Added for Random tips
+import 'dart:math'; 
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:http/http.dart' as http;
 import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:encrypt/encrypt.dart' as encrypt; // For AES-256
-import 'package:telephony/telephony.dart'; // <--- AUTOMATED SMS PACKAGE
+import 'package:encrypt/encrypt.dart' as encrypt; 
+import 'package:telephony/telephony.dart'; 
 import 'emergency_support_screen.dart';
 import 'breathing_screen.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
-const Color myPrimaryColor = Color(0xFF26C6DA); // Teal Color
-// Ab code mein sirf ye nazar aayega:
+import 'package:connectivity_plus/connectivity_plus.dart';
+
+
+const Color myPrimaryColor = Color(0xFF26C6DA); 
+
 final String GEMINI_API_KEY = dotenv.env['GEMINI_API_KEY'] ?? "";
-final String GEMINI_MODEL = dotenv.env['GEMINI_MODEL_NAME'] ?? "default-model";
+final String GEMINI_MODEL = dotenv.env['GEMINI_MODEL'] ?? "default-model"; 
+
 class EncryptionHelper {
   static final key = encrypt.Key.fromUtf8('my_super_secret_key_123456789012'); 
   static final iv = encrypt.IV.fromUtf8('8888888888888888'); 
   static final encrypter = encrypt.Encrypter(encrypt.AES(key));
+
   static String encryptText(String text) {
     if (text.isEmpty) return text;
     try {
@@ -29,6 +34,7 @@ class EncryptionHelper {
       return text;
     }
   }
+
   static String decryptText(String encryptedText) {
     if (encryptedText.isEmpty) return encryptedText;
     try {
@@ -39,47 +45,21 @@ class EncryptionHelper {
     }
   }
 }
+
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
+
   @override
   State<ChatScreen> createState() => _ChatScreenState();
 }
+
 class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   final TextEditingController _controller = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   final User? _user = FirebaseAuth.instance.currentUser;
   final Telephony telephony = Telephony.instance;
-  void _sendAutomatedSMS(String message) async {
-    bool? permissionsGranted = await telephony.requestPhoneAndSmsPermissions;
-    if (permissionsGranted != null && permissionsGranted && _user != null) {
-      try {
-        DocumentSnapshot userDoc = await FirebaseFirestore.instance
-            .collection('users')
-            .doc(_user!.uid)
-            .get();
-        if (userDoc.exists) {
-          Map<String, dynamic> data = userDoc.data() as Map<String, dynamic>;
-          var contact = data['emergency_contact'];  
-          if (contact != null) {
-            String emergencyNumber = contact['phone'] ?? "";
-            bool isAutoSMSOn = contact['auto_sms'] ?? true;
-            if (emergencyNumber.isNotEmpty && isAutoSMSOn) {
-              telephony.sendSms(
-                to: emergencyNumber,
-                message: "Mindful Haven Alert: Emergency detected. User message: '$message'",
-                statusListener: (SendStatus status) {
-                  debugPrint("SMS Status: ${status.name}");
-                }
-              );
-            }
-          }
-        }
-      } catch (e) {
-        debugPrint("Error fetching emergency number: $e");
-      }
-    }
-  }
+
   bool _isSearching = false;
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = "";
@@ -89,8 +69,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   Timer? _inactivityTimer;
   String _detectedMood = "Mood Detection";
   String? _editingMessageId;
- // Ab ye value seedha .env file se aaye gi
-final String gemmaBackendUrl = dotenv.env['GEMMA_BACKEND_URL'] ?? "";
+ final String bertBackendUrl = dotenv.env['BERT_PREDICT_URL'] ?? "";
+
   @override
   void initState() {
     super.initState();
@@ -99,6 +79,7 @@ final String gemmaBackendUrl = dotenv.env['GEMMA_BACKEND_URL'] ?? "";
     _startInactivityTimer();
     _requestPermissionsAtStart();
   }
+
   void _requestPermissionsAtStart() async {
     try {
       await telephony.requestPhoneAndSmsPermissions;
@@ -106,6 +87,7 @@ final String gemmaBackendUrl = dotenv.env['GEMMA_BACKEND_URL'] ?? "";
       debugPrint("Permission request error: $e");
     }
   }
+
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
@@ -115,6 +97,26 @@ final String gemmaBackendUrl = dotenv.env['GEMMA_BACKEND_URL'] ?? "";
     _scrollController.dispose();
     super.dispose();
   }
+
+  void _showErrorSnackBar(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            const Icon(Icons.wifi_off_rounded, color: Colors.white),
+            const SizedBox(width: 12),
+            Expanded(child: Text(message, style: const TextStyle(color: Colors.white))),
+          ],
+        ),
+        backgroundColor: Colors.redAccent,
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        duration: const Duration(seconds: 4),
+      ),
+    );
+  }
+
+  // --- REST OF THE METHODS (Mood Tips, Stats, etc.) ---
   String _mapMoodToField(String mood) {
     String m = mood.toLowerCase().trim();
     if (['joy', 'happy', 'surprise', 'love'].contains(m)) return "happy_count";
@@ -122,7 +124,9 @@ final String gemmaBackendUrl = dotenv.env['GEMMA_BACKEND_URL'] ?? "";
     if (['sadness', 'sad', 'low', 'grief'].contains(m)) return "sad_count";
     return "";
   }
+
   final Map<String, List<String>> moodTips = {
+
     'joy': [
       "Oho! Aaj toh bari chamak aa rahi hai face par, party kab hai? 🎉",
       "Nazar na lag jaye kisi ki, itni khushi? Sadqa nikaal dena thora sa!",
@@ -175,6 +179,7 @@ final String gemmaBackendUrl = dotenv.env['GEMMA_BACKEND_URL'] ?? "";
       "Suno! Aaj khud ko ek choti si treat do, tum deserve karti ho."
     ]
   };
+
   Future<void> _updateEmotionStats(String mood) async {
     if (_user == null) return;
     String moodKey = mood.toLowerCase().trim();
@@ -191,52 +196,81 @@ final String gemmaBackendUrl = dotenv.env['GEMMA_BACKEND_URL'] ?? "";
       };
       if (fieldName.isNotEmpty) updateData[fieldName] = FieldValue.increment(1);
       await userRef.update(updateData);
-      await userRef.collection('mood_history').add({
-        'mood': mood,
-        'timestamp': FieldValue.serverTimestamp(),
-      });
-      debugPrint("✅ Tip and History Updated: $randomTip");
-    } catch (e) {
-      debugPrint("❌ Stats Update Error: $e");
-    }
+      await userRef.collection('mood_history').add({'mood': mood, 'timestamp': FieldValue.serverTimestamp()});
+    } catch (e) { debugPrint("Stats Update Error: $e"); }
   }
+
   Future<String> _analyzeWithBERT(String text) async {
     setState(() => _detectedMood = "Analyzing Mood...");
-    try {
-      final response = await http.post(
-            Uri.parse(gemmaBackendUrl),
-            headers: {"Content-Type": "application/json"},
-            body: jsonEncode({"text": text}),
-          ).timeout(const Duration(seconds: 15));
-      if (response.statusCode == 200) {
-        final Map<String, dynamic> responseBody = jsonDecode(response.body);
-        String mood = responseBody['emotion'] ?? "Neutral";
-        setState(() => _detectedMood = "Current Mood: $mood");
-        await _updateEmotionStats(mood);
-        return mood;
-      }
-    } catch (e) {
-      debugPrint("BERT Backend Error: $e");
-    }
+   try {
+  final response = await http.post(
+      // Yahan ab bertBackendUrl use hoga
+      Uri.parse(bertBackendUrl), 
+      headers: {"Content-Type": "application/json"},
+      body: jsonEncode({"text": text}),
+    ).timeout(const Duration(seconds: 12));
+
+  if (response.statusCode == 200) {
+    final Map<String, dynamic> responseBody = jsonDecode(response.body);
+    // Note: Confirm kar lein ke Hugging Face se 'emotion' hi wapas aa raha hai
+    String mood = responseBody['label'] ?? responseBody['emotion'] ?? "Neutral"; 
+    
+    setState(() => _detectedMood = "Current Mood: $mood");
+    await _updateEmotionStats(mood);
+    return mood;
+  } else {
+    print("Backend Error: ${response.statusCode}");
+  }
+} catch (e) {
+  print("Connection Error: $e");
+}
     setState(() => _detectedMood = "Mood: Neutral");
     return "Neutral";
   }
+
   void _startInactivityTimer() {
     _inactivityTimer?.cancel();
     _inactivityTimer = Timer(const Duration(minutes: 5), () {
       if (mounted && !_isTyping) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Main yahan hoon, agar aap kuch kehna chahein...")),
-        );
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Main yahan hoon, agar aap kuch kehna chahein...")));
       }
     });
   }
+
+  void _sendAutomatedSMS(String message) async {
+    bool? permissionsGranted = await telephony.requestPhoneAndSmsPermissions;
+    if (permissionsGranted != null && permissionsGranted && _user != null) {
+      try {
+        DocumentSnapshot userDoc = await FirebaseFirestore.instance.collection('users').doc(_user!.uid).get();
+        if (userDoc.exists) {
+          Map<String, dynamic> data = userDoc.data() as Map<String, dynamic>;
+          var contact = data['emergency_contact'];  
+          if (contact != null) {
+            String emergencyNumber = contact['phone'] ?? "";
+            if (emergencyNumber.isNotEmpty && (contact['auto_sms'] ?? true)) {
+              telephony.sendSms(to: emergencyNumber, message: "Mindful Haven Alert: Emergency detected. User message: '$message'");
+            }
+          }
+        }
+      } catch (e) { debugPrint("SMS Error: $e"); }
+    }
+  }
+
+  // --- UPDATED CORE LOGIC ---
   Future<void> _sendMessage() async {
     final text = _controller.text.trim();
     if (text.isEmpty || _user == null || _isTyping) return;
-    final messagesRef = FirebaseFirestore.instance
-        .collection('chats').doc(_user!.uid).collection('history').doc(_currentChatId).collection('messages');
+
+    // Internet check before anything
+    var connectivityResult = await (Connectivity().checkConnectivity());
+    if (connectivityResult == ConnectivityResult.none) {
+      _showErrorSnackBar("Internet not found! Please check your connection.");
+      return;
+    }
+
+    final messagesRef = FirebaseFirestore.instance.collection('chats').doc(_user!.uid).collection('history').doc(_currentChatId).collection('messages');
     String encryptedText = EncryptionHelper.encryptText(text);
+
     if (_editingMessageId != null) {
       String msgIdToUpdate = _editingMessageId!;
       setState(() { _editingMessageId = null; _isTyping = true; });
@@ -246,75 +280,67 @@ final String gemmaBackendUrl = dotenv.env['GEMMA_BACKEND_URL'] ?? "";
     } else {
       _controller.clear();
       setState(() { _isTyping = true; _showEmoji = false; });
+      
       await FirebaseFirestore.instance.collection('chats').doc(_user!.uid).collection('history').doc(_currentChatId).set({
-            'title': EncryptionHelper.encryptText(text.length > 30 ? "${text.substring(0, 27)}..." : text),
-            'timestamp': FieldValue.serverTimestamp(),
-          }, SetOptions(merge: true));
-      String moodResult = await _analyzeWithBERT(text);
-      await messagesRef.add({
-        'text': encryptedText,
-        'isUser': true,
+        'title': EncryptionHelper.encryptText(text.length > 30 ? "${text.substring(0, 27)}..." : text),
         'timestamp': FieldValue.serverTimestamp(),
-      });
-      if (!["emergency", "help", "suicide", "marne", "kill", "jaan khatam"].any((w) => text.toLowerCase().contains(w))) {
-        await _getAIResponse(text, messagesRef, mood: moodResult);
-      } else {
+      }, SetOptions(merge: true));
+
+      await messagesRef.add({'text': encryptedText, 'isUser': true, 'timestamp': FieldValue.serverTimestamp()});
+
+      if (["emergency", "help", "suicide", "marne", "kill", "jaan khatam"].any((w) => text.toLowerCase().contains(w))) {
         _sendAutomatedSMS(text); 
         Navigator.push(context, MaterialPageRoute(builder: (context) => const EmergencySupportScreen()));
         setState(() => _isTyping = false);
+      } else {
+        String moodResult = await _analyzeWithBERT(text);
+        await _getAIResponse(text, messagesRef, mood: moodResult);
       }
     }
     _startInactivityTimer();
   }
+
   Future<void> _getAIResponse(String text, CollectionReference messagesRef, {String mood = "Neutral"}) async {
     try {
       final prevMessages = await messagesRef.orderBy('timestamp', descending: true).limit(8).get();
-      String systemPrompt = """
-You are 'Mindful Friend', a kind emotional support AI. 
-User current mood: $mood. 
-STRICT RULES:
-1. Mix Roman Urdu and English (Hinglish/Urdu-ish style).
-2. Use deep empathy and keep responses short, like a close friend.
-3. MEDICAL SAFETY: You are NOT a doctor or therapist. 
-4. NEVER prescribe any medicine, pills, or clinical treatments (e.g., antidepressants, Panadol, etc.).
-5. NEVER provide a medical diagnosis (e.g., 'You have Depression').
-6. If the user asks for medicine or a diagnosis, politely refuse: 'Main ek AI companion hoon, doctor nahi. Behtar hai aap kisi expert se consult karein.'
-""";
+      String systemPrompt = "You are 'Mindful Friend', a kind emotional support AI. User mood: $mood. Mix Roman Urdu/English. Short, empathetic. No medical advice.";
+      
       List<Map<String, dynamic>> chatHistory = [{"role": "user", "parts": [{"text": systemPrompt}]}];
       for (var m in prevMessages.docs.reversed) {
-        chatHistory.add({
-          "role": m['isUser'] ? "user" : "model", 
-          "parts": [{"text": EncryptionHelper.decryptText(m['text'] ?? "")}]
-        });
+        chatHistory.add({"role": m['isUser'] ? "user" : "model", "parts": [{"text": EncryptionHelper.decryptText(m['text'] ?? "")}]});
       }
+
       final response = await http.post(
         Uri.parse("https://generativelanguage.googleapis.com/v1beta/models/$GEMINI_MODEL:generateContent?key=$GEMINI_API_KEY"),
         headers: {"Content-Type": "application/json"},
         body: jsonEncode({"contents": chatHistory}),
-      ).timeout(const Duration(seconds: 25));
+      ).timeout(const Duration(seconds: 20));
+
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         if (data['candidates'] != null && data['candidates'].isNotEmpty) {
           String reply = data['candidates'][0]['content']['parts'][0]['text'];
-          await messagesRef.add({
-            'text': EncryptionHelper.encryptText(reply), 
-            'isUser': false, 
-            'timestamp': FieldValue.serverTimestamp()
-          });
+          await messagesRef.add({'text': EncryptionHelper.encryptText(reply), 'isUser': false, 'timestamp': FieldValue.serverTimestamp()});
         }
+      } else {
+        _showErrorSnackBar("Server busy! Reply nahi mil saka.");
       }
-    } catch (e) { 
-      debugPrint("Gemini Catch Error: $e"); 
-    } finally { 
-      if (mounted) setState(() => _isTyping = false); 
-      _scrollToBottom(); 
+    } on TimeoutException catch (_) {
+      _showErrorSnackBar("Connection too slow! Please try again.");
+    } catch (e) {
+      _showErrorSnackBar("Something went wrong with the connection.");
+    } finally {
+      if (mounted) setState(() => _isTyping = false);
+      _scrollToBottom();
     }
   }
+
   void _scrollToBottom() {
     Future.delayed(const Duration(milliseconds: 300), () {
       if (_scrollController.hasClients) _scrollController.animateTo(0.0, duration: const Duration(milliseconds: 300), curve: Curves.easeOut);
     });
   }
+
   Future<void> _deleteChat(String chatId) async {
     if (_user == null) return;
     try {
@@ -322,13 +348,82 @@ STRICT RULES:
       for (var doc in messages.docs) { await doc.reference.delete(); }
       await FirebaseFirestore.instance.collection('chats').doc(_user!.uid).collection('history').doc(chatId).delete();
       if (_currentChatId == chatId) {
-        setState(() {
-          _currentChatId = DateTime.now().millisecondsSinceEpoch.toString();
-          _detectedMood = "Mood Detection";
-        });
+        setState(() { _currentChatId = DateTime.now().millisecondsSinceEpoch.toString(); _detectedMood = "Mood Detection"; });
       }
     } catch (e) { debugPrint("Delete Error: $e"); }
   }
+
+// Feedback save karne ka function
+Future<void> _submitFeedback(bool isPositive, String userComment, String aiMessage) async {
+  if (_user == null) return;
+  try {
+    await FirebaseFirestore.instance.collection('feedback').add({
+      'uid': _user!.uid,
+      'isPositive': isPositive,
+      'comment': userComment,
+      'ai_response': EncryptionHelper.encryptText(aiMessage),
+      'timestamp': FieldValue.serverTimestamp(),
+      'model': GEMINI_MODEL,
+    });
+    
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text("JazakAllah! Aapka feedback save ho gaya.")),
+    );
+  } catch (e) {
+    debugPrint("Feedback Error: $e");
+  }
+}
+
+// Popup dikhanay ka function
+void _showFeedbackDialog(bool isPositive, String aiMessage) {
+  final TextEditingController _feedbackController = TextEditingController();
+  
+  showDialog(
+    context: context,
+    builder: (context) => AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      title: Text(
+        isPositive ? "Thanks for good feedback! 😍" : "Sorry! What went wrong? 😔",
+        style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: myPrimaryColor),
+      ),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            isPositive 
+              ? "Humein khushi hui ke aapko jawab pasand aaya. Kuch mazeed kehna chahenge?" 
+              : "Humein afsos hai. Kya aap bata sakte hain ke jawab mein kya kami thi?",
+            style: const TextStyle(fontSize: 14),
+          ),
+          const SizedBox(height: 15),
+          TextField(
+            controller: _feedbackController,
+            maxLines: 3,
+            decoration: InputDecoration(
+              hintText: "Write your feedback here...",
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: const BorderSide(color: myPrimaryColor),
+              ),
+            ),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel", style: TextStyle(color: Colors.grey))),
+        ElevatedButton(
+          style: ElevatedButton.styleFrom(backgroundColor: myPrimaryColor, shape: const StadiumBorder()),
+          onPressed: () {
+            _submitFeedback(isPositive, _feedbackController.text, aiMessage);
+            Navigator.pop(context);
+          },
+          child: const Text("Submit", style: TextStyle(color: Colors.white)),
+        ),
+      ],
+    ),
+  );
+}
   @override
   Widget build(BuildContext context) {
     bool isDarkMode = Theme.of(context).brightness == Brightness.dark;
@@ -358,14 +453,11 @@ STRICT RULES:
                     final data = docs[index].data() as Map<String, dynamic>;
                     String decryptedText = EncryptionHelper.decryptText(data['text'] ?? '');
                     return _ChatBubble(
-                      text: decryptedText, 
-                      isUser: data['isUser'] ?? false, 
-                      isDarkMode: isDarkMode, 
-                      onEdit: () { 
-                        _controller.text = decryptedText; 
-                        setState(() => _editingMessageId = docs[index].id); 
-                      }
-                    );
+                      text: decryptedText, isUser: data['isUser'] ?? false, isDarkMode: isDarkMode, 
+                      onEdit: () { _controller.text = decryptedText; setState(() => _editingMessageId = docs[index].id); },
+  // Naya implementation
+  onFeedback: (isPositive) => _showFeedbackDialog(isPositive, decryptedText), 
+);
                   },
                 );
               },
@@ -378,6 +470,7 @@ STRICT RULES:
       ),
     );
   }
+
   Widget _buildInputArea(bool isDarkMode) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
@@ -391,9 +484,11 @@ STRICT RULES:
       ),
     );
   }
+
   Widget _buildEmojiPicker(bool isDarkMode) {
     return SizedBox(height: 250, child: EmojiPicker(onEmojiSelected: (category, emoji) => _controller.text += emoji.emoji, config: Config(emojiViewConfig: EmojiViewConfig(backgroundColor: isDarkMode ? Colors.black : const Color(0xFFF2F2F2)))));
   }
+
   Widget _buildDrawer(bool isDarkMode) {
     return Drawer(
       width: MediaQuery.of(context).size.width * 0.80,
@@ -419,10 +514,7 @@ STRICT RULES:
               child: Container(padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 15), decoration: BoxDecoration(color: myPrimaryColor, borderRadius: BorderRadius.circular(12)), child: const Row(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(Icons.add, color: Colors.white), SizedBox(width: 10), Text("New Chat", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold))])),
             ),
           ),
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-            child: Text("Recent Chats", style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.grey)),
-          ),
+          const Padding(padding: EdgeInsets.symmetric(horizontal: 20, vertical: 10), child: Text("Recent Chats", style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.grey))),
           Expanded(
             child: StreamBuilder<QuerySnapshot>(
               stream: FirebaseFirestore.instance.collection('chats').doc(_user?.uid).collection('history').orderBy('timestamp', descending: true).snapshots(),
@@ -435,50 +527,23 @@ STRICT RULES:
                   return decryptedTitle.toLowerCase().contains(_searchQuery);
                 }).toList();
                 return ListView.builder(
-                  padding: const EdgeInsets.symmetric(horizontal: 10),
-                  itemCount: filteredDocs.length,
+                  padding: const EdgeInsets.symmetric(horizontal: 10), itemCount: filteredDocs.length,
                   itemBuilder: (context, index) {
                     var data = filteredDocs[index].data() as Map<String, dynamic>;
                     bool isSelected = _currentChatId == filteredDocs[index].id;
                     String chatId = filteredDocs[index].id;
-                    
-                    String encryptedTitle = data['title'] ?? "";
-                    String displayTitle;
-                    
-                    try {
-                      displayTitle = EncryptionHelper.decryptText(encryptedTitle);
-                      if (displayTitle.isEmpty) displayTitle = "Untitled Chat";
-                    } catch (e) {
-                      displayTitle = "Chat History"; 
-                    }
+                    String displayTitle = EncryptionHelper.decryptText(data['title'] ?? "");
+                    if (displayTitle.isEmpty) displayTitle = "Untitled Chat";
                     
                     return ListTile(
                       tileColor: isSelected ? myPrimaryColor.withOpacity(0.1) : Colors.transparent,
-                      title: Text(
-                        displayTitle, 
-                        maxLines: 1, 
-                        overflow: TextOverflow.ellipsis, 
-                        style: TextStyle(
-                          color: isDarkMode ? Colors.white : Colors.black, 
-                          fontWeight: isSelected ? FontWeight.bold : FontWeight.normal
-                        )
-                      ),
-                      onTap: () { 
-                        setState(() => _currentChatId = chatId); 
-                        Navigator.pop(context); 
-                      },
+                      title: Text(displayTitle, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: isDarkMode ? Colors.white : Colors.black, fontWeight: isSelected ? FontWeight.bold : FontWeight.normal)),
+                      onTap: () { setState(() => _currentChatId = chatId); Navigator.pop(context); },
                       onLongPress: () {
-                        showDialog(
-                          context: context,
-                          builder: (context) => AlertDialog(
-                            title: const Text("Delete Chat?"),
-                            content: const Text("Do you want to delete this chat permanently?"),
-                            actions: [
-                              TextButton(onPressed: () => Navigator.pop(context), child: const Text("No", style: TextStyle(color: Colors.grey))),
-                              TextButton(onPressed: () { _deleteChat(chatId); Navigator.pop(context); }, child: const Text("Yes", style: TextStyle(color: Colors.red))),
-                            ],
-                          ),
-                        );
+                        showDialog(context: context, builder: (context) => AlertDialog(
+                          title: const Text("Delete Chat?"), content: const Text("Do you want to delete this chat permanently?"),
+                          actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text("No")), TextButton(onPressed: () { _deleteChat(chatId); Navigator.pop(context); }, child: const Text("Yes", style: TextStyle(color: Colors.red)))],
+                        ));
                       },
                     );
                   },
@@ -491,16 +556,26 @@ STRICT RULES:
     );
   }
 }
+
 class _ChatBubble extends StatelessWidget {
   final String text;
   final bool isUser, isDarkMode;
   final VoidCallback onEdit;
-  const _ChatBubble({required this.text, required this.isUser, required this.isDarkMode, required this.onEdit});
+  final Function(bool isPositive) onFeedback;
+const _ChatBubble({
+    required this.text, 
+    required this.isUser, 
+    required this.isDarkMode, 
+    required this.onEdit,
+    required this.onFeedback, // Require karein
+  });
+
   @override
   Widget build(BuildContext context) {
     String lowerText = text.toLowerCase();
     bool showBreathingButton = !isUser && (lowerText.contains("breathing") || lowerText.contains("saans") || lowerText.contains("exercise"));
     bool showYoutubeButton = !isUser && (lowerText.contains("audio") || lowerText.contains("naat") || lowerText.contains("relax") || lowerText.contains("sukoon"));
+
     return Align(
       alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
       child: Column(
@@ -511,16 +586,10 @@ class _ChatBubble extends StatelessWidget {
             mainAxisAlignment: isUser ? MainAxisAlignment.end : MainAxisAlignment.start,
             children: [
               if (isUser) ...[
-                IconButton(
-                  icon: const Icon(Icons.copy, size: 14, color: Colors.grey), 
-                  onPressed: () {
-                    Clipboard.setData(ClipboardData(text: text));
-                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Text Copied!"), duration: Duration(seconds: 1)));
-                  }
-                ),
+                IconButton(icon: const Icon(Icons.copy, size: 14, color: Colors.grey), onPressed: () { Clipboard.setData(ClipboardData(text: text)); }),
                 IconButton(icon: const Icon(Icons.edit, size: 14, color: Colors.grey), onPressed: onEdit),
               ],
-              Flexible( // Added Flexible to prevent right-side overflow
+              Flexible(
                 child: Container(
                   constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.7),
                   margin: const EdgeInsets.symmetric(vertical: 4),
@@ -531,59 +600,41 @@ class _ChatBubble extends StatelessWidget {
               ),
             ],
           ),
-          if (!isUser) ...[
+        if (!isUser) ...[
             Padding(
               padding: const EdgeInsets.only(left: 10, top: 2),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  // Thumbs Up
                   IconButton(
-                    icon: const Icon(Icons.thumb_up_alt_outlined, size: 16, color: Colors.grey),
-                    onPressed: () => ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Glad you liked it!"), duration: Duration(seconds: 1))),
+                    icon: const Icon(Icons.thumb_up_alt_outlined, size: 16, color: Colors.grey), 
+                    onPressed: () => onFeedback(true), // Callback call karein
                   ),
+                  // Thumbs Down
                   IconButton(
-                    icon: const Icon(Icons.thumb_down_alt_outlined, size: 16, color: Colors.grey),
-                    onPressed: () => ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Thanks for feedback, I'll improve."), duration: Duration(seconds: 1))),
+                    icon: const Icon(Icons.thumb_down_alt_outlined, size: 16, color: Colors.grey), 
+                    onPressed: () => onFeedback(false), // Callback call karein
                   ),
-                  IconButton(
-                    icon: const Icon(Icons.copy, size: 16, color: Colors.grey),
-                    onPressed: () {
-                      Clipboard.setData(ClipboardData(text: text));
-                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("AI Response Copied!"), duration: Duration(seconds: 1)));
-                    },
-                  ),
+                  IconButton(icon: const Icon(Icons.copy, size: 16, color: Colors.grey), onPressed: () { Clipboard.setData(ClipboardData(text: text)); }),
                 ],
               ),
             ),
           ],
           if (showBreathingButton) Padding(padding: const EdgeInsets.only(left: 5, bottom: 8), child: ElevatedButton.icon(onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (context) => const BreathingScreen())), icon: const Icon(Icons.air, size: 18), label: const Text("Go to Breathing Area"), style: ElevatedButton.styleFrom(backgroundColor: myPrimaryColor, foregroundColor: Colors.white, shape: const StadiumBorder()))),
           if (showYoutubeButton) 
-  Padding(
-    padding: const EdgeInsets.only(left: 5, bottom: 8), 
-    child: ElevatedButton.icon(
-      onPressed: () async { 
-        // .env se URL uthao, agar na mile toh fallback as a default link
-        final String youtubeUrl = dotenv.env['RELAXATION_VIDEO_URL'] ?? "https://www.youtube.com";
-        final Uri url = Uri.parse(youtubeUrl); 
-        
-        if (await canLaunchUrl(url)) {
-          await launchUrl(url, mode: LaunchMode.externalApplication); 
-        } else {
-          // Agar link na khule toh error show kar do
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text("Could not launch YouTube"))
-          );
-        }
-      }, 
-      icon: const Icon(Icons.play_circle_fill, size: 18), 
-      label: const Text("Listen to Peaceful Audio"), 
-      style: ElevatedButton.styleFrom(
-        backgroundColor: Colors.redAccent, 
-        foregroundColor: Colors.white, 
-        shape: const StadiumBorder()
-      ),
-    ),
-  ),
+            Padding(
+              padding: const EdgeInsets.only(left: 5, bottom: 8), 
+              child: ElevatedButton.icon(
+                onPressed: () async { 
+                  final String youtubeUrl = dotenv.env['RELAXATION_VIDEO_URL'] ?? "https://www.youtube.com";
+                  final Uri url = Uri.parse(youtubeUrl); 
+                  if (await canLaunchUrl(url)) { await launchUrl(url, mode: LaunchMode.externalApplication); }
+                }, 
+                icon: const Icon(Icons.play_circle_fill, size: 18), label: const Text("Listen to Peaceful Audio"), 
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, foregroundColor: Colors.white, shape: const StadiumBorder()),
+              ),
+            ),
         ],
       ),
     );
