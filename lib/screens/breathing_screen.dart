@@ -3,6 +3,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:mindful_haven/screens/chat_screen.dart';
 import 'package:provider/provider.dart';
 import 'theme_provider.dart';
 
@@ -246,12 +247,17 @@ class _BreathingScreenState extends State<BreathingScreen>
       child: Row(
         children: [
           IconButton(
-            icon: const Icon(Icons.arrow_back_ios_new, color: Colors.black, size: 22),
-            onPressed: () {
-              // Navigating specifically to Chat Screen
-              Navigator.pushReplacementNamed(context, '/chat');
-            },
-          ),
+  icon: const Icon(Icons.arrow_back_ios_new),
+  onPressed: () {
+    // Ye line check karegi ke agar peeche kuch hai toh pop kare, 
+    // warna seedha Chat Screen par le jaye.
+    Navigator.pushAndRemoveUntil(
+      context,
+      MaterialPageRoute(builder: (context) => const ChatScreen()), 
+      (route) => false, // Is se purani sari screens (Splash etc.) khatam ho jayengi
+    );
+  },
+),
           const SizedBox(width: 8),
          const Text(
           "Breathe and Relax",

@@ -8,14 +8,13 @@ import 'package:http/http.dart' as http;
 import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:encrypt/encrypt.dart' as encrypt; 
-import 'package:telephony/telephony.dart'; 
+// import 'package:telephony/telephony.dart'; 
 import 'emergency_support_screen.dart';
 import 'breathing_screen.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
-
-
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart'; // Ye line add karein
 const Color myPrimaryColor = Color(0xFF26C6DA); 
 
 final String GEMINI_API_KEY = dotenv.env['GEMINI_API_KEY'] ?? "";
@@ -58,7 +57,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   final TextEditingController _controller = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   final User? _user = FirebaseAuth.instance.currentUser;
-  final Telephony telephony = Telephony.instance;
+  static const platform = MethodChannel('send_sms_channel');
+  // final Telephony telephony = Telephony.instance;
 
   bool _isSearching = false;
   final TextEditingController _searchController = TextEditingController();
@@ -77,15 +77,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _currentChatId = DateTime.now().millisecondsSinceEpoch.toString();
     _startInactivityTimer();
-    _requestPermissionsAtStart();
-  }
-
-  void _requestPermissionsAtStart() async {
-    try {
-      await telephony.requestPhoneAndSmsPermissions;
-    } catch (e) {
-      debugPrint("Permission request error: $e");
-    }
   }
 
   @override
@@ -122,6 +113,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     if (['joy', 'happy', 'surprise', 'love'].contains(m)) return "happy_count";
     if (['stress', 'fear', 'anger', 'disgust', 'anxiety', 'tense'].contains(m)) return "stress_count";
     if (['sadness', 'sad', 'low', 'grief'].contains(m)) return "sad_count";
+    if (['neutral'].contains(m)) return "neutral_count";
     return "";
   }
 
@@ -180,25 +172,40 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     ]
   };
 
-  Future<void> _updateEmotionStats(String mood) async {
-    if (_user == null) return;
-    String moodKey = mood.toLowerCase().trim();
-    List<String> selectedTips = moodTips[moodKey] ?? moodTips['neutral']!;
-    selectedTips.shuffle(); 
-    String randomTip = selectedTips.first;
-    String fieldName = _mapMoodToField(mood);
-    try {
-      DocumentReference userRef = FirebaseFirestore.instance.collection('users').doc(_user!.uid);
-      Map<String, dynamic> updateData = {
-        'last_mood_update': FieldValue.serverTimestamp(),
-        'last_mood_detected': mood,
-        'latest_tip': randomTip,
-      };
-      if (fieldName.isNotEmpty) updateData[fieldName] = FieldValue.increment(1);
-      await userRef.update(updateData);
-      await userRef.collection('mood_history').add({'mood': mood, 'timestamp': FieldValue.serverTimestamp()});
-    } catch (e) { debugPrint("Stats Update Error: $e"); }
+ Future<void> _updateEmotionStats(String mood) async {
+  if (_user == null) return;
+  String moodKey = mood.toLowerCase().trim();
+  
+  // 1. Tip pick karo
+  List<String> selectedTips = moodTips[moodKey] ?? moodTips['neutral']!;
+  selectedTips.shuffle(); 
+  String randomTip = "Daily Summary: ${selectedTips.first}"; // Format matching
+
+  String fieldName = _mapMoodToField(mood);
+  
+  try {
+    DocumentReference userRef = FirebaseFirestore.instance.collection('users').doc(_user!.uid);
+    
+    // 2. Map mein sahi field name dalo
+    Map<String, dynamic> updateData = {
+      'last_mood_update': FieldValue.serverTimestamp(),
+      'last_mood_detected': mood.toUpperCase(), // Status update
+      'latest_tip_daily': randomTip,            // <--- YEH HAI VO MAIN CHANGE
+    };
+    
+    if (fieldName.isNotEmpty) updateData[fieldName] = FieldValue.increment(1);
+    
+    // Ek hi update call mein status aur tip dono chale gaye
+    await userRef.update(updateData);
+    
+    await userRef.collection('mood_history').add({
+      'mood': mood, 
+      'timestamp': FieldValue.serverTimestamp()
+    });
+  } catch (e) { 
+    debugPrint("Stats Update Error: $e"); 
   }
+}
 
   Future<String> _analyzeWithBERT(String text) async {
     setState(() => _detectedMood = "Analyzing Mood...");
@@ -236,105 +243,221 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       }
     });
   }
-
-  void _sendAutomatedSMS(String message) async {
-    bool? permissionsGranted = await telephony.requestPhoneAndSmsPermissions;
-    if (permissionsGranted != null && permissionsGranted && _user != null) {
-      try {
-        DocumentSnapshot userDoc = await FirebaseFirestore.instance.collection('users').doc(_user!.uid).get();
-        if (userDoc.exists) {
-          Map<String, dynamic> data = userDoc.data() as Map<String, dynamic>;
-          var contact = data['emergency_contact'];  
-          if (contact != null) {
-            String emergencyNumber = contact['phone'] ?? "";
-            if (emergencyNumber.isNotEmpty && (contact['auto_sms'] ?? true)) {
-              telephony.sendSms(to: emergencyNumber, message: "Mindful Haven Alert: Emergency detected. User message: '$message'");
-            }
-          }
-        }
-      } catch (e) { debugPrint("SMS Error: $e"); }
-    }
+Future<void> sendBackgroundSMS(String phoneNumber, String messageContent) async {
+  try {
+    await platform.invokeMethod('sendSMS', {
+      'phone': phoneNumber,
+      'message': messageContent,
+    });
+    print("SMS successfully sent via Native Android Bridge!");
+  } on PlatformException catch (e) {
+    print("Failed to send SMS: '${e.message}'.");
   }
-
+}
   // --- UPDATED CORE LOGIC ---
   Future<void> _sendMessage() async {
-    final text = _controller.text.trim();
-    if (text.isEmpty || _user == null || _isTyping) return;
+  final text = _controller.text.trim();
+  if (text.isEmpty || _user == null || _isTyping) return;
 
-    // Internet check before anything
-    var connectivityResult = await (Connectivity().checkConnectivity());
-    if (connectivityResult == ConnectivityResult.none) {
-      _showErrorSnackBar("Internet not found! Please check your connection.");
-      return;
-    }
-
-    final messagesRef = FirebaseFirestore.instance.collection('chats').doc(_user!.uid).collection('history').doc(_currentChatId).collection('messages');
-    String encryptedText = EncryptionHelper.encryptText(text);
-
-    if (_editingMessageId != null) {
-      String msgIdToUpdate = _editingMessageId!;
-      setState(() { _editingMessageId = null; _isTyping = true; });
-      _controller.clear();
-      await messagesRef.doc(msgIdToUpdate).update({'text': encryptedText, 'edited': true});
-      await _getAIResponse(text, messagesRef);
-    } else {
-      _controller.clear();
-      setState(() { _isTyping = true; _showEmoji = false; });
-      
-      await FirebaseFirestore.instance.collection('chats').doc(_user!.uid).collection('history').doc(_currentChatId).set({
-        'title': EncryptionHelper.encryptText(text.length > 30 ? "${text.substring(0, 27)}..." : text),
-        'timestamp': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
-
-      await messagesRef.add({'text': encryptedText, 'isUser': true, 'timestamp': FieldValue.serverTimestamp()});
-
-      if (["emergency", "help", "suicide", "marne", "kill", "jaan khatam"].any((w) => text.toLowerCase().contains(w))) {
-        _sendAutomatedSMS(text); 
-        Navigator.push(context, MaterialPageRoute(builder: (context) => const EmergencySupportScreen()));
-        setState(() => _isTyping = false);
-      } else {
-        String moodResult = await _analyzeWithBERT(text);
-        await _getAIResponse(text, messagesRef, mood: moodResult);
-      }
-    }
-    _startInactivityTimer();
+  // 1. Internet check
+  var connectivityResult = await (Connectivity().checkConnectivity());
+  if (connectivityResult == ConnectivityResult.none) {
+    _showErrorSnackBar("Internet not found! Please check your connection.");
+    return;
   }
 
-  Future<void> _getAIResponse(String text, CollectionReference messagesRef, {String mood = "Neutral"}) async {
-    try {
-      final prevMessages = await messagesRef.orderBy('timestamp', descending: true).limit(8).get();
-      String systemPrompt = "You are 'Mindful Friend', a kind emotional support AI. User mood: $mood. Mix Roman Urdu/English. Short, empathetic. No medical advice.";
+  final messagesRef = FirebaseFirestore.instance.collection('chats').doc(_user!.uid).collection('history').doc(_currentChatId).collection('messages');
+  String encryptedText = EncryptionHelper.encryptText(text);
+
+  if (_editingMessageId != null) {
+    String msgIdToUpdate = _editingMessageId!;
+    setState(() { _editingMessageId = null; _isTyping = true; });
+    _controller.clear();
+    await messagesRef.doc(msgIdToUpdate).update({'text': encryptedText, 'edited': true});
+    await _getAIResponse(text, messagesRef);
+  } else {
+    _controller.clear();
+    setState(() { _isTyping = true; _showEmoji = false; });
+    
+    // 2. Chat history title set karna
+    await FirebaseFirestore.instance.collection('chats').doc(_user!.uid).collection('history').doc(_currentChatId).set({
+      'title': EncryptionHelper.encryptText(text.length > 30 ? "${text.substring(0, 27)}..." : text),
+      'timestamp': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+
+   // 3. User message add karna
+    await messagesRef.add({'text': encryptedText, 'isUser': true, 'timestamp': FieldValue.serverTimestamp()});
+
+    // 4. Emergency check
+    if (["emergency", "help", "suicide", "marne", "kill", "jaan khatam"].any((w) => text.toLowerCase().contains(w))) {
       
-      List<Map<String, dynamic>> chatHistory = [{"role": "user", "parts": [{"text": systemPrompt}]}];
-      for (var m in prevMessages.docs.reversed) {
-        chatHistory.add({"role": m['isUser'] ? "user" : "model", "parts": [{"text": EncryptionHelper.decryptText(m['text'] ?? "")}]});
+      // Firestore se current user ka emergency number fetch karna
+      final currentUser = FirebaseAuth.instance.currentUser;
+      String emergencyNumber = ""; // Default empty
+
+      if (currentUser != null) {
+        final userDoc = await FirebaseFirestore.instance
+            .collection('users')
+            .doc(currentUser.uid)
+            .get();
+            
+        // फर्ज़ करो tumne field ka naam 'emergencyContact' ya 'trustedNumber' rakkha hai
+        emergencyNumber = userDoc.data()?['emergencyContact'] ?? ""; 
       }
 
-      final response = await http.post(
-        Uri.parse("https://generativelanguage.googleapis.com/v1beta/models/$GEMINI_MODEL:generateContent?key=$GEMINI_API_KEY"),
-        headers: {"Content-Type": "application/json"},
-        body: jsonEncode({"contents": chatHistory}),
-      ).timeout(const Duration(seconds: 20));
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        if (data['candidates'] != null && data['candidates'].isNotEmpty) {
-          String reply = data['candidates'][0]['content']['parts'][0]['text'];
-          await messagesRef.add({'text': EncryptionHelper.encryptText(reply), 'isUser': false, 'timestamp': FieldValue.serverTimestamp()});
+      // Agar number mil jaye toh hi SMS bhejo
+      if (emergencyNumber.isNotEmpty) {
+        String messageContent = "Emergency Alert from Mindful Haven! User sent a critical message: '$text'";
+        
+        try {
+          await platform.invokeMethod('sendSMS', {
+            'phone': emergencyNumber,
+            'message': messageContent,
+          });
+          print("Dynamic Emergency SMS Sent to: $emergencyNumber");
+        } on PlatformException catch (e) {
+          print("Failed to send automatic SMS: '${e.message}'.");
         }
       } else {
-        _showErrorSnackBar("Server busy! Reply nahi mil saka.");
+        print("No emergency number found in Firestore for this user!");
       }
-    } on TimeoutException catch (_) {
-      _showErrorSnackBar("Connection too slow! Please try again.");
-    } catch (e) {
-      _showErrorSnackBar("Something went wrong with the connection.");
-    } finally {
-      if (mounted) setState(() => _isTyping = false);
-      _scrollToBottom();
+
+      Navigator.push(context, MaterialPageRoute(builder: (context) => const EmergencySupportScreen()));
+      setState(() => _isTyping = false);
+    } else {
+// --- NAYI LOGIC START: SMART OVERRIDE + BERT SYNC ---
+      String lowerText = text.toLowerCase();
+      String moodResult = "";
+
+      // 1. Pehle Keywords check karo (Manual Override)
+      if (lowerText.contains("stress") || lowerText.contains("tension") || lowerText.contains("burden") || lowerText.contains("load") || lowerText.contains("exam") || lowerText.contains("crash") || lowerText.contains("hurt")) {
+        moodResult = "Stress";
+        // Manual override par bhi top bar aur stats update honge
+        setState(() => _detectedMood = "Current Mood: Stress");
+        await _updateEmotionStats("stress"); 
+      } else if (lowerText.contains("happy") || lowerText.contains("joy") || lowerText.contains("mazay") || lowerText.contains("love")) {
+        moodResult = "Joy";
+        setState(() => _detectedMood = "Current Mood: Joy");
+        await _updateEmotionStats("joy");
+      } else if (lowerText.contains("sad") || lowerText.contains("roney") || lowerText.contains("dukh") || lowerText.contains("wasted")) {
+        moodResult = "Sadness";
+        setState(() => _detectedMood = "Current Mood: Sadness");
+        await _updateEmotionStats("sadness");
+      } else {
+        // 2. Agar koi keyword match nahi hua, tab BERT model ko call karo
+        moodResult = await _analyzeWithBERT(text);
+      }
+
+      // 5. Insights Screen ke liye text aur final mood sync karna
+      await FirebaseFirestore.instance.collection('users').doc(_user!.uid).update({
+        'last_message_text': text, 
+        'last_mood_detected': moodResult.toUpperCase(),
+        'last_mood_update': FieldValue.serverTimestamp(),
+      });
+
+      // 6. Gemini (AI) ko final mood ke saath call karna
+      await _getAIResponse(text, messagesRef, mood: moodResult);
+      
+      // --- NAYI LOGIC END ---
     }
   }
+  _startInactivityTimer();
+}
+Future<void> _getAIResponse(String text, CollectionReference messagesRef, {String mood = "Neutral"}) async {
+  try {
+    // Current Logged-in User ki ID lena
+    final currentUser = FirebaseAuth.instance.currentUser;
+    int userAge = 20; // Default age agar database se na mile
 
+    if (currentUser != null) {
+      // Firestore se user ka document nikalna taake hum uski age parh sakein
+      final userDoc = await FirebaseFirestore.instance.collection('users').doc(currentUser.uid).get();
+      if (userDoc.exists && userDoc.data()?['age'] != null) {
+        userAge = userDoc.data()?['age'];
+      }
+    }
+
+    //  Age ke mutabik specific tone set karna (Yeh hum system instruction mein bhejenge)
+    String ageToneInstruction = "";
+    if (userAge < 15) {
+      // 12-14 saal ke bachon ke liye dosti wali aur soft tone
+      ageToneInstruction = "The user is a child (Age: $userAge). Act like a friendly elder sibling or school friend. Use very simple words, be extremely playful, gentle, and avoid complex psychological advice.";
+    } else {
+      // Adults ke liye mature tone
+      ageToneInstruction = "The user is an adult (Age: $userAge). Act like a mature mental health companion. Provide sensible empathy and practical cognitive reframing.";
+    }
+
+    // Sirf aakhri 5-6 messages kaafi hain history ke liye
+    final prevMessages = await messagesRef.orderBy('timestamp', descending: true).limit(6).get();
+    
+    //  Aap ki system instruction ke andar humne ageToneInstruction ko fit kar diya
+    String systemInstruction = """
+System: You are 'Mindful Friend', a friendly emotional support companion. 
+The user's current detected mood is: $mood.
+$ageToneInstruction
+
+RULES:
+1. Speak in a friendly mix of Roman Urdu and English (Hinglish).
+2. Give a natural, short response (around 2 to 3 lines max). Don't make it just 1 short sentence, talk nicely.
+3. Be supportive, use cute emojis, and give a small playful advice or joke to lighten up their mood.
+""";
+    
+    List<Map<String, dynamic>> contents = [];
+
+    // Sab se pehle System Instruction ko top standard structure mein add karein taake model ignore na kare
+    contents.add({
+      "role": "user",
+      "parts": [{"text": systemInstruction}]
+    });
+    // History ko "User -> Model" sequence mein dalna
+    for (var m in prevMessages.docs.reversed) {
+      String msgText = EncryptionHelper.decryptText(m['text'] ?? "");
+      if (msgText.isNotEmpty) {
+        contents.add({
+          "role": m['isUser'] ? "user" : "model",
+          "parts": [{"text": msgText}]
+        });
+      }
+    }
+
+    // Naya user message payload sequence update check
+    if (contents.isEmpty || contents.last['role'] == 'model') {
+      contents.add({
+        "role": "user",
+        "parts": [{"text": text}]
+      });
+    } else {
+      contents.last['parts'][0]['text'] += "\n\nUser: $text";
+    }
+
+    final response = await http.post(
+      Uri.parse("https://generativelanguage.googleapis.com/v1beta/models/$GEMINI_MODEL:generateContent?key=$GEMINI_API_KEY"),
+      headers: {"Content-Type": "application/json"},
+      body: jsonEncode({"contents": contents}),
+    ).timeout(const Duration(seconds: 60));
+
+    if (response.statusCode == 200) {
+      final data = jsonDecode(response.body);
+      if (data['candidates'] != null && data['candidates'].isNotEmpty) {
+        String reply = data['candidates'][0]['content']['parts'][0]['text'];
+        await messagesRef.add({
+          'text': EncryptionHelper.encryptText(reply),
+          'isUser': false,
+          'timestamp': FieldValue.serverTimestamp()
+        });
+      }
+    } else {
+      debugPrint("Gemini Error: ${response.body}");
+      _showErrorSnackBar("Server busy! Please try again in a moment.");
+    }
+  } catch (e) {
+    debugPrint("Chat Error: $e");
+    _showErrorSnackBar("Connection issues. Please check your internet.");
+  } finally {
+    if (mounted) setState(() => _isTyping = false);
+    _scrollToBottom();
+  }
+}
   void _scrollToBottom() {
     Future.delayed(const Duration(milliseconds: 300), () {
       if (_scrollController.hasClients) _scrollController.animateTo(0.0, duration: const Duration(milliseconds: 300), curve: Curves.easeOut);
@@ -391,8 +514,8 @@ void _showFeedbackDialog(bool isPositive, String aiMessage) {
         children: [
           Text(
             isPositive 
-              ? "Humein khushi hui ke aapko jawab pasand aaya. Kuch mazeed kehna chahenge?" 
-              : "Humein afsos hai. Kya aap bata sakte hain ke jawab mein kya kami thi?",
+              ? "Glad you found this helpful! Want to say more?"
+              : "Sorry for the disappointment. What was missing?",
             style: const TextStyle(fontSize: 14),
           ),
           const SizedBox(height: 15),
@@ -446,7 +569,53 @@ void _showFeedbackDialog(bool isPositive, String aiMessage) {
               stream: FirebaseFirestore.instance.collection('chats').doc(_user?.uid).collection('history').doc(_currentChatId).collection('messages').orderBy('timestamp', descending: true).snapshots(),
               builder: (context, snapshot) {
                 if (!snapshot.hasData) return const Center(child: CircularProgressIndicator(color: myPrimaryColor));
+                
                 final docs = snapshot.data!.docs;
+
+                // ➕ 👇 YEH NAYA CODE HAI: Empty State Setup 👇 ➕
+                if (docs.isEmpty) {
+                  return Center(
+  child: Padding(
+    padding: const EdgeInsets.symmetric(horizontal: 40),
+    child: Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        RichText(
+          textAlign: TextAlign.center,
+          text: TextSpan(
+            style: TextStyle(
+              fontSize: 16,
+              color: isDarkMode ? Colors.white70 : Colors.black54,
+              height: 1.5,
+            ),
+            children: [
+              const TextSpan(text: "Welcome to "),
+              TextSpan(
+                text: "Mindful Haven",
+                style: TextStyle(
+                  color: myPrimaryColor,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 17,
+                ),
+              ),
+              const TextSpan(text: " \n\n"),
+              const TextSpan(
+                text: "Take a deep breath. What's heavy on your heart or mind today? I am here to listen, always.",
+                style: TextStyle(
+                  fontStyle: FontStyle.italic,
+                  fontSize: 14,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    ),
+  ),
+);
+                }
+
+                // 🔄 BAKI AAPKA LISTVIEW WAISE HI CHALAY GA
                 return ListView.builder(
                   controller: _scrollController, reverse: true, padding: const EdgeInsets.all(16), itemCount: docs.length,
                   itemBuilder: (context, index) {
@@ -455,9 +624,8 @@ void _showFeedbackDialog(bool isPositive, String aiMessage) {
                     return _ChatBubble(
                       text: decryptedText, isUser: data['isUser'] ?? false, isDarkMode: isDarkMode, 
                       onEdit: () { _controller.text = decryptedText; setState(() => _editingMessageId = docs[index].id); },
-  // Naya implementation
-  onFeedback: (isPositive) => _showFeedbackDialog(isPositive, decryptedText), 
-);
+                      onFeedback: (isPositive) => _showFeedbackDialog(isPositive, decryptedText), 
+                    );
                   },
                 );
               },
@@ -589,15 +757,35 @@ const _ChatBubble({
                 IconButton(icon: const Icon(Icons.copy, size: 14, color: Colors.grey), onPressed: () { Clipboard.setData(ClipboardData(text: text)); }),
                 IconButton(icon: const Icon(Icons.edit, size: 14, color: Colors.grey), onPressed: onEdit),
               ],
-              Flexible(
-                child: Container(
-                  constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.7),
-                  margin: const EdgeInsets.symmetric(vertical: 4),
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                  decoration: BoxDecoration(color: isUser ? myPrimaryColor : (isDarkMode ? const Color(0xFF1E1E1E) : Colors.grey[200]), borderRadius: BorderRadius.circular(15)),
-                  child: Text(text, style: TextStyle(color: isUser || isDarkMode ? Colors.white : Colors.black87)),
-                ),
-              ),
+           Flexible(
+  child: Container(
+    constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.7),
+    margin: const EdgeInsets.symmetric(vertical: 4),
+    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+    decoration: BoxDecoration(
+      color: isUser ? myPrimaryColor : (isDarkMode ? const Color(0xFF1E1E1E) : Colors.grey[200]), 
+      borderRadius: BorderRadius.circular(15)
+    ),
+    // Yahan Text ko replace kar diya:
+    child: MarkdownBody(
+  data: text,
+  styleSheet: MarkdownStyleSheet(
+    p: TextStyle(
+      color: isUser || isDarkMode ? Colors.white : Colors.black87,
+      fontSize: 15,
+    ),
+    strong: TextStyle(
+      fontWeight: FontWeight.bold,
+      color: isUser || isDarkMode ? Colors.white : Colors.black, 
+    ),
+    listBullet: TextStyle(
+      // Make sure 'myPrimaryColor' is defined in your variables
+      color: isUser ? Colors.white : (myPrimaryColor ?? Colors.blue),
+    ),
+  ),
+),
+  ),
+),
             ],
           ),
         if (!isUser) ...[

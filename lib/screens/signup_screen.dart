@@ -18,6 +18,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
   final _passwordController = TextEditingController();
   final _confirmPasswordController = TextEditingController();
   final AuthService _authService = AuthService();
+  final _ageController = TextEditingController();
 
   bool _isLoading = false;
   bool _isAccepted = false;
@@ -49,6 +50,8 @@ class _SignUpScreenState extends State<SignUpScreen> {
               .doc(user.uid)
               .set({
                 'name': _nameController.text.trim(),
+                'age': int.tryParse(_ageController.text.trim()) ?? 0,
+                // 'father_name': _fatherNameController.text.trim(),
                 'bio': 'My Bio',
                 'total_breathing_sessions': 0,
                 'total_breathing_minutes': 0,
@@ -132,6 +135,20 @@ class _SignUpScreenState extends State<SignUpScreen> {
                       if (val == null || val.isEmpty)
                         return "Email is required";
                       if (!val.contains('@')) return "Enter a valid email";
+                      return null;
+                    },
+                  ),
+                  const SizedBox(height: 14),
+
+                  // 3️⃣ UI ke andar Email ke niche Age ka Input Box add kar diya
+                  _buildTextField(
+                    _ageController,
+                    "Age",
+                    Icons.calendar_today_outlined,
+                    keyboardType: TextInputType.number, // Sirf number keypad khulega
+                    validator: (val) {
+                      if (val == null || val.isEmpty) return "Age is required";
+                      if (int.tryParse(val) == null) return "Enter a valid age number";
                       return null;
                     },
                   ),

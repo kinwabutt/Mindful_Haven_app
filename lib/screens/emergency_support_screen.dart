@@ -5,9 +5,8 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:telephony/telephony.dart'; 
 import 'emergency_settings_screen.dart';
-
+import 'package:flutter/services.dart';
 class EmergencySupportScreen extends StatefulWidget {
   const EmergencySupportScreen({super.key});
 
@@ -20,8 +19,7 @@ class _EmergencySupportScreenState extends State<EmergencySupportScreen>
   late AnimationController _pulseController;
   late Animation<double> _scaleAnimation;
   late AnimationController _rippleController;
-
-  final Telephony telephony = Telephony.instance; 
+  static const platform = MethodChannel('send_sms_channel');
   static const Color myPrimaryColor = Color(0xFF26C6DA);
 
   String savedContactName = "Loading...";
@@ -78,11 +76,10 @@ class _EmergencySupportScreenState extends State<EmergencySupportScreen>
     }
   }
 
-  // --- NEW: WHATSAPP LOGIC ---
+  // --- WHATSAPP LOGIC ---
   Future<void> _sendWhatsAppAlert(String message) async {
     if (savedContactPhone.isEmpty) return;
 
-    // Formatting number for WhatsApp (removing 0 and adding 92)
     String formattedNumber = savedContactPhone;
     if (formattedNumber.startsWith('0')) {
       formattedNumber = '92${formattedNumber.substring(1)}';
@@ -100,7 +97,7 @@ class _EmergencySupportScreenState extends State<EmergencySupportScreen>
       debugPrint("WhatsApp not installed");
     }
   }
-
+// --- BACKGROUND SMS LOGIC VIA METHOD CHANNEL ---
   Future<void> _sendEmergencyAlert() async {
     if (savedContactPhone.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -127,29 +124,25 @@ class _EmergencySupportScreenState extends State<EmergencySupportScreen>
         desiredAccuracy: LocationAccuracy.high,
       );
 
-      final String mapsUrl = 'http://maps.google.com/?q=${position.latitude},${position.longitude}';
+      // 🛑 Fixed Maps URL string formatting bug ($ missing in latitude)
+      final String mapsUrl = 'https://www.google.com/maps?q=${position.latitude},${position.longitude}';
       final String message = 'EMERGENCY! I am using Mindful Haven and I am in distress. My current location: $mapsUrl';
 
-      // 1. Send SMS Automatically (Direct)
-      bool? permissionsGranted = await telephony.requestPhoneAndSmsPermissions;
+      if (isAutoSMSEnabled) {
+        // 👇 Purana BackgroundSms hata kar apna Native MethodChannel use kar rahe hain
+        await platform.invokeMethod('sendSMS', {
+          'phone': savedContactPhone, // 👈 Fully Dynamic from Firestore!
+          'message': message,
+        });
 
-      if (permissionsGranted != null && permissionsGranted) {
-        await telephony.sendSms(
-          to: savedContactPhone,
-          message: message,
-          statusListener: (SendStatus status) {
-            if (status == SendStatus.SENT) {
-              debugPrint("SMS Sent Successfully");
-            }
-          },
+        debugPrint("SMS Sent Successfully via Native Android Bridge");
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Emergency Alert Sent to $savedContactName!")),
         );
-        
-        // 2. Open WhatsApp for secondary alert
-        await _sendWhatsAppAlert(message);
-
-      } else {
-        throw 'SMS Permission Denied';
       }
+
+      // 2. Secondary Alert via WhatsApp
+      await _sendWhatsAppAlert(message);
       
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -219,7 +212,7 @@ class _EmergencySupportScreenState extends State<EmergencySupportScreen>
                     ),
                     const SizedBox(height: 16),
                     _buildNeumorphicCrisisLink(
-                      title: ' Prevention Help',
+                      title: 'Prevention Help',
                       subtitle: 'Tap to call 15(Police)',
                       iconData: Icons.health_and_safety_rounded,
                       color: Colors.redAccent,
@@ -393,7 +386,7 @@ class _EmergencySupportScreenState extends State<EmergencySupportScreen>
                     const SizedBox(width: 12),
                     Text(
                       _isSending ? 'SENDING...' : 'SEND ALERT',
-                    style: TextStyle(
+                      style: const TextStyle(
                         color: Colors.black,
                         fontWeight: FontWeight.bold,
                         letterSpacing: 1.2,
@@ -424,7 +417,7 @@ class _EmergencySupportScreenState extends State<EmergencySupportScreen>
           shape: BoxShape.circle,
           boxShadow: isDarkMode
               ? null
-              : [BoxShadow(color: Colors.black12, blurRadius: 8)],
+              : [const BoxShadow(color: Colors.black12, blurRadius: 8)],
         ),
         child: Icon(
           icon,
